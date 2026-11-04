@@ -1,0 +1,7 @@
+var i, s;
+
+for i := 0, i < 100000, i := i + 1 do
+  s := "abcdefgh";
+  s[0] := s[0] + 1
+od;
+write (s.length)

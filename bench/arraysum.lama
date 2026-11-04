@@ -1,0 +1,11 @@
+var i, j, total, a;
+
+total := 0;
+a := [0, 1, 2, 3, 4, 5, 6, 7];
+for i := 0, i < 500, i := i + 1 do
+  a[0] := i;
+  for j := 0, j < a.length, j := j + 1 do
+    total := total + a[j]
+  od
+od;
+write (total)

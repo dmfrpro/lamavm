@@ -1,0 +1,15 @@
+fun makeAdder (x) {
+  fun add (y) {
+    x + y
+  }
+  add
+}
+
+var i, total, f;
+
+total := 0;
+for i := 0, i < 100000, i := i + 1 do
+  f := makeAdder (i);
+  total := total + f (2)
+od;
+write (total)

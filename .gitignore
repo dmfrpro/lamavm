@@ -1,0 +1,12 @@
+build/
+result
+result-*
+tmp/
+*.bc
+compile_commands.json
+.*
+!.gitignore
+!.checkpatch.conf
+!.clang-format
+!.clang-tidy
+!.envrc
