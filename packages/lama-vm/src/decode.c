@@ -1,5 +1,6 @@
 #include "decode.h"
 
+#include "execute.h"
 #include "format.h"
 #include "unit_internal.h"
 #include "util.h"
@@ -58,9 +59,12 @@ static void decode_var(struct decoder *d, struct insn *in)
 	v = reader_i32(reader);
 	kind = reader->opcode & BC_VAR_KIND_MASK;
 	group = reader->opcode & BC_VAR_GROUP_MASK;
-	in->op = group == BC_LD_FIRST  ? I_LD :
-		 group == BC_LDA_GROUP ? I_LDA :
-					 I_ST;
+	if (group == BC_LD_FIRST)
+		in->op = I_LD_GLO + kind;
+	else if (group == BC_LDA_GROUP)
+		in->op = I_LDA;
+	else
+		in->op = I_ST_GLO + kind;
 	in->kind = kind;
 	in->a = v;
 
@@ -192,7 +196,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 
 	switch (opc) {
 	case BC_BINOP_FIRST ... BC_BINOP_LAST:
-		in->op = I_BINOP;
+		in->op = I_BINOP_ADD + opc - BC_BINOP_ADD;
 		in->kind = opc;
 		break;
 	case BC_CONST:
@@ -386,6 +390,10 @@ static void resolve_targets(struct unit *u, const size_t *fn_ids)
 				       in->op == I_CALL ? "CALL" : "CLOSURE", t,
 				       in->op == I_CALL ? "" :
 							  " or BEGIN_CLOSURE");
+			if (in->op == I_CLOSURE && in->b != tgt->imm)
+				die_at(u->name, in->raw,
+				       "CLOSURE capture count %d does not match target capture count %d",
+				       in->b, (int)tgt->imm);
 		} else if (fn_ids[i] != fn_ids[ti]) {
 			die_at(u->name, in->raw,
 			       "jump target %d is outside the enclosing function body",
@@ -459,10 +467,10 @@ void unit_decode(struct unit *u)
 		memset(in, 0, sizeof(*in));
 		in->raw = (int32_t)d.reader.start;
 		in->unit = u;
-		in->name = u->name;
 		u->offset_map[d.reader.start] = (int32_t)idx;
 		d.fn_ids[idx] = d.cur_fn;
 		decode_instruction(&d, in);
+		in->handler = execute_handler(in->op);
 		u->insns_count++;
 	}
 

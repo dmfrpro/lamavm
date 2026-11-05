@@ -1,13 +1,15 @@
-# Predecoded indirect threaded tail-call Lama interpreter
+# Predecoded direct-threaded tail-call Lama interpreter
 
 ## Example usage with Nix devShell
 
 ```sh
 nix develop
-list-tests          # list regression and malformed-input tests
-test-all            # run all tests
-test-one test001    # run one reference-output comparison
-bench               # compare performance on all examples
+list-tests          # show test names in a Nushell table
+test-all            # run tests and render three-VM userspace tables via Nushell
+test-one test001    # show timings, outputs, and userspace statistics
+bench               # render three-VM benchmark tables via Nushell
+bench fib           # run one benchmark
+bench --list        # list benchmark names
 lamac -h            # show reference compiler options
 ```
 

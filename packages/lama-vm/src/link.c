@@ -30,6 +30,10 @@ static void link_call(struct unit *u, struct insn *in)
 
 	p = pub_find(in->ext_name, PUB_FUNCTION);
 	if (p) {
+		if (in->op == I_CLOSURE && in->b != p->entry->imm)
+			die_at(u->name, in->raw,
+			       "CLOSURE capture count %d does not match target capture count %d",
+			       in->b, (int)p->entry->imm);
 		in->target = p->entry;
 		return;
 	}
@@ -98,9 +102,15 @@ void link_units(void)
 			case I_CLOSURE:
 				link_call(u, in);
 				break;
-			case I_LD:
+			case I_LD_GLO:
+			case I_LD_LOC:
+			case I_LD_ARG:
+			case I_LD_CLO:
 			case I_LDA:
-			case I_ST:
+			case I_ST_GLO:
+			case I_ST_LOC:
+			case I_ST_ARG:
+			case I_ST_CLO:
 				link_global(u, in);
 				break;
 			default:

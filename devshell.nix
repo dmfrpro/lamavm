@@ -19,6 +19,7 @@
 
     git
     python3
+    nushell
     clang-tools
     mbake
     nixf-diagnose
@@ -31,7 +32,7 @@
   commands = [
     {
       name = "bench";
-      help = "run the Lama VM benchmarks";
+      help = "render three-VM benchmark tables via Nushell: bench [fib]";
       command = ''
         exec ${perSystem.self.bench}/bin/bench "$@"
       '';
@@ -62,7 +63,7 @@
     }
     {
       name = "list-tests";
-      help = "list regression and malformed-input test names";
+      help = "show regression and malformed-input tests in a Nushell table";
       command = ''
         exec ${perSystem.self.list-tests}/bin/list-tests "$@"
       '';
@@ -77,7 +78,7 @@
     }
     {
       name = "test-all";
-      help = "run regression and malformed-input tests";
+      help = "run tests and render three-VM userspace tables via Nushell";
       command = ''
         exec ${perSystem.self.test}/bin/test "$@"
       '';

@@ -37,7 +37,7 @@ int main(int argc, char **argv)
 	struct unit *main_unit;
 	struct unit *u;
 	struct unit *dep;
-	char *dir;
+	char *dir, *name;
 	aint *globals;
 	size_t total_globals = 0;
 	size_t goff = 0;
@@ -68,7 +68,9 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	main_unit = unit_load(file, unit_name_of(file));
+	name = unit_name_of(file);
+	main_unit = unit_load(file, name);
+	free(name);
 	unit_decode(main_unit);
 
 	for (i = 0; i < units_count; i++) {
@@ -104,10 +106,9 @@ int main(int argc, char **argv)
 
 	link_units();
 	__init();
-	sync_gc(globals);
 	set_args(argc - argi, argv + argi);
 
-	run(&main_unit->insns[0], globals);
+	run(&main_unit->insns[0]);
 
 	__shutdown();
 	return EXIT_SUCCESS;

@@ -2,8 +2,8 @@
 """Generate malformed .bc files (one per subdirectory-free name) into a directory.
 
 Each case is a small mutation of a valid hand-written unit or a hand-built
-invalid unit; scripts/run_negative_tests.sh checks that lama-custom-vm rejects
-every one of them with a diagnostic message and a non-zero exit code.
+invalid unit; scripts/test.py checks that lama-custom-vm rejects every one
+of them with a diagnostic message and a non-zero exit code.
 """
 import os
 import struct
@@ -268,6 +268,78 @@ def _():
     return with_code(
         simple_body() + bytes([0xFF]), strings=b"f\0", pubs=[(0, 0, 0), (0, 0, 0)]
     )
+
+
+@case("binop_stack_underflow")
+def _():
+    return with_code(bytes([0x52]) + i32(0, 0) + bytes([0x01, 0x16, 0xFF]))
+
+
+@case("drop_stack_underflow")
+def _():
+    return with_code(bytes([0x52]) + i32(0, 0) + bytes([0x18, 0x16, 0xFF]))
+
+
+@case("swap_stack_underflow")
+def _():
+    code = (
+        bytes([0x52]) + i32(0, 0)
+        + bytes([0x10]) + i32(1)
+        + bytes([0x1A, 0x16, 0xFF])
+    )
+    return with_code(code)
+
+
+@case("end_stack_underflow")
+def _():
+    return with_code(bytes([0x52]) + i32(0, 0) + bytes([0x16, 0xFF]))
+
+
+@case("division_by_zero")
+def _():
+    code = (
+        bytes([0x52]) + i32(0, 0)
+        + bytes([0x10]) + i32(1)
+        + bytes([0x10]) + i32(0)
+        + bytes([0x04, 0x16, 0xFF])
+    )
+    return with_code(code)
+
+
+@case("modulo_by_zero")
+def _():
+    code = (
+        bytes([0x52]) + i32(0, 0)
+        + bytes([0x10]) + i32(1)
+        + bytes([0x10]) + i32(0)
+        + bytes([0x05, 0x16, 0xFF])
+    )
+    return with_code(code)
+
+
+@case("end_extra_operands")
+def _():
+    code = (
+        bytes([0x52]) + i32(0, 0)
+        + bytes([0x10]) + i32(1)
+        + bytes([0x10]) + i32(2)
+        + bytes([0x16, 0xFF])
+    )
+    return with_code(code)
+
+
+@case("closure_capture_count_mismatch")
+def _():
+    code = (
+        bytes([0x52]) + i32(0, 1)       # 0: main BEGIN
+        + bytes([0x54]) + i32(24, 1)    # 9: CLOSURE 24, one capture
+        + bytes([1]) + i32(0)           # capture local 0
+        + bytes([0x16])                 # 23: main END
+        + bytes([0x53]) + i32(0, 0, 2)  # 24: BEGIN_CLOSURE, two captures
+        + bytes([0x10]) + i32(1)
+        + bytes([0x16, 0xFF])
+    )
+    return with_code(code)
 
 
 def main():

@@ -41,11 +41,10 @@ compile-commands:
 	$(BEAR) --output $(COMPILE_COMMANDS) -- $(MAKE) -B all
 
 test: all
-	bash $(ROOT)/scripts/run_tests.sh
-	bash $(ROOT)/scripts/run_negative_tests.sh
+	python3 $(ROOT)/scripts/test.py all
 
 bench: all
-	bash $(ROOT)/scripts/bench.sh
+	python3 $(ROOT)/scripts/bench.py
 
 clean:
 	rm -rf $(BUILD)

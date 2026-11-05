@@ -1,9 +1,19 @@
 { pkgs, perSystem, ... }:
 
+let
+  inherit (pkgs) lib;
+in
+
 pkgs.stdenv.mkDerivation (finalAttrs: {
   pname = "lama-custom-vm";
   version = "0.1.0";
-  src = ./.;
+  src = lib.cleanSourceWith {
+    src = ./.;
+    filter =
+      path: type:
+      lib.cleanSourceFilter path type
+      && !(type == "directory" && lib.hasPrefix "build" (baseNameOf path));
+  };
 
   makeFlags = [ "LAMA_DIR=${perSystem.self.lama}/share/Lama" ];
 

@@ -9,7 +9,8 @@ pkgs.writeShellApplication {
   name = "bench";
   runtimeInputs = with pkgs; [
     coreutils
-    gawk
+    nushell
+    python3
     perSystem.self.lama
     perSystem.self.lama-vm
   ];
@@ -22,10 +23,10 @@ pkgs.writeShellApplication {
     export ITER=${perSystem.self.lama-vm}/bin/lama-custom-vm
     export REF=${perSystem.self.lama}/bin/lamavm
 
-    WORK="$work/bench" ${inputs.self}/scripts/bench.sh "$@"
+    WORK="$work/bench" ${pkgs.python3}/bin/python3 ${inputs.self}/scripts/bench.py "$@"
   '';
   meta = {
-    description = "Run Lama VM performance benchmarks";
+    description = "Render three-VM benchmark tables with Nushell and rusage";
     mainProgram = "bench";
     platforms = [ "x86_64-linux" ];
   };

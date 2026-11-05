@@ -76,7 +76,19 @@ enum public_symbol_kind {
 };
 
 enum {
-	I_BINOP,
+	I_BINOP_ADD,
+	I_BINOP_SUB,
+	I_BINOP_MUL,
+	I_BINOP_DIV,
+	I_BINOP_MOD,
+	I_BINOP_LT,
+	I_BINOP_LE,
+	I_BINOP_GT,
+	I_BINOP_GE,
+	I_BINOP_EQ,
+	I_BINOP_NE,
+	I_BINOP_AND,
+	I_BINOP_OR,
 	I_CONST,
 	I_STRING,
 	I_SEXP,
@@ -89,9 +101,15 @@ enum {
 	I_DUP,
 	I_SWAP,
 	I_ELEM,
-	I_LD,
+	I_LD_GLO,
+	I_LD_LOC,
+	I_LD_ARG,
+	I_LD_CLO,
 	I_LDA,
-	I_ST,
+	I_ST_GLO,
+	I_ST_LOC,
+	I_ST_ARG,
+	I_ST_CLO,
 	I_CJMPZ,
 	I_CJMPNZ,
 	I_BEGIN,
@@ -118,14 +136,18 @@ struct capture {
 };
 
 struct builtin;
+struct vm;
+struct insn;
+
+typedef void (*opcode_handler)(struct vm *vm, struct insn *in);
 
 struct insn {
+	opcode_handler handler;
 	uint8_t op;
 	uint8_t kind;
 	int32_t a, b;
 	aint imm;
 	const char *str;
-	const char *name;
 	struct insn *target;
 	aint *glob;
 	struct capture *caps;

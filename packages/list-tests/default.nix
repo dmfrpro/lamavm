@@ -19,9 +19,16 @@ let
     builtins.split ''@case\("([^"]+)"\)'' (builtins.readFile negativeGenerator)
   );
 
-  printNames = lib.concatMapStrings (name: ''
-    printf '%s\n' ${lib.escapeShellArg name}
-  '');
+  testRows =
+    map (name: {
+      suite = "regression";
+      test = name;
+    }) regressionTests
+    ++ map (name: {
+      suite = "malformed-input";
+      test = name;
+    }) negativeTests;
+  report = builtins.toJSON testRows;
 in
 
 pkgs.writeShellApplication {
@@ -32,11 +39,8 @@ pkgs.writeShellApplication {
       exit 2
     fi
 
-    printf 'Regression tests:\n'
-    ${printNames regressionTests}
-
-    printf '\nMalformed-input tests:\n'
-    ${printNames negativeTests}
+    ${pkgs.nushell}/bin/nu --stdin -c "\$in | from json | table --width 120" \
+      <<< ${lib.escapeShellArg report}
   '';
   meta = {
     description = "List Lama VM regression and malformed-input tests";

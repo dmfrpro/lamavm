@@ -1,176 +1,38 @@
 #include "execute.h"
 #include "builtins.h"
+#include "execute_internal.h"
 #include "util.h"
 
 #include <stdint.h>
-#include <stdlib.h>
 
-extern aint Ls__Infix_43(void *p, void *q);
-extern aint Ls__Infix_45(void *p, void *q);
-extern aint Ls__Infix_42(void *p, void *q);
-extern aint Ls__Infix_47(void *p, void *q);
-extern aint Ls__Infix_37(void *p, void *q);
-extern aint Ls__Infix_60(void *p, void *q);
-extern aint Ls__Infix_6061(void *p, void *q);
-extern aint Ls__Infix_62(void *p, void *q);
-extern aint Ls__Infix_6261(void *p, void *q);
-extern aint Ls__Infix_6161(void *p, void *q);
-extern aint Ls__Infix_3361(void *p, void *q);
-extern aint Ls__Infix_3333(void *p, void *q);
-extern aint Ls__Infix_3838(void *p, void *q);
-
-static aint *stack_mem;
-static aint *stack_limit;
-static aint *stack_bottom;
-
-aint *execute_stack_init(size_t total_globals)
-{
-	stack_mem = malloc(STACK_WORDS * sizeof(aint));
-	if (!stack_mem)
-		die("cannot allocate the operand stack");
-
-	stack_bottom = stack_mem + STACK_WORDS;
-	stack_limit = stack_mem + STACK_RESERVE_WORDS;
-	__gc_stack_bottom = (size_t)stack_bottom;
-	return stack_bottom - total_globals;
-}
-
-struct frame {
-	struct insn *ip;
-	aint *sp, *bp;
-	void *closure;
-	int32_t nargs;
-};
-
-struct vm {
-	aint *sp;
-	aint *bp;
-	void *closure;
-	int32_t nargs;
-	int32_t call_nargs;
-	struct frame *frames;
-	size_t frames_count;
-	size_t frames_cap;
-};
-
-static aint (*const binops[])(void *, void *) = {
-	[BC_BINOP_ADD] = Ls__Infix_43,	[BC_BINOP_SUB] = Ls__Infix_45,
-	[BC_BINOP_MUL] = Ls__Infix_42,	[BC_BINOP_DIV] = Ls__Infix_47,
-	[BC_BINOP_MOD] = Ls__Infix_37,	[BC_BINOP_LT] = Ls__Infix_60,
-	[BC_BINOP_LE] = Ls__Infix_6061, [BC_BINOP_GT] = Ls__Infix_62,
-	[BC_BINOP_GE] = Ls__Infix_6261, [BC_BINOP_EQ] = Ls__Infix_6161,
-	[BC_BINOP_NE] = Ls__Infix_3361, [BC_BINOP_AND] = Ls__Infix_3838,
-	[BC_BINOP_OR] = Ls__Infix_3333,
-};
+aint vm_stack_mem[STACK_WORDS];
 
 enum {
-	UNKNOWN_ARITY = -1,
 	CLOSURE_ENTRY_INDEX = 0,
-	CLOSURE_CAPTURE_OFFSET = 1,
 	SEXP_TAG_SLOT_COUNT = 1,
 	STA_VALUE_INDEX = 0,
 	STA_INDEX_INDEX = 1,
 	STA_OBJECT_INDEX = 2,
-	STA_CONSUMED_SLOTS = 2,
 };
 
-typedef void (*opcode_handler)(struct vm *vm, struct insn *in);
+static const opcode_handler handlers[UINT8_MAX + 1];
 
-static const opcode_handler dispatch[UINT8_MAX + 1];
+aint *execute_stack_init(size_t total_globals)
+{
+	aint *globals;
+
+	if (total_globals > STACK_WORDS - STACK_RESERVE_WORDS)
+		die("too many global variables: %zu", total_globals);
+
+	globals = vm_stack_mem + STACK_WORDS - total_globals;
+	__gc_stack_bottom = (size_t)(vm_stack_mem + STACK_WORDS);
+	vm_set_sp(globals);
+	return globals;
+}
 
 static inline void dispatch_next(struct vm *vm, struct insn *in)
 {
-	dispatch[in->op](vm, in);
-}
-
-static inline void vm_push(struct vm *vm, aint value)
-{
-	if (vm->sp <= stack_limit)
-		die("operand stack overflow");
-
-	*--vm->sp = value;
-}
-
-static inline aint vm_pop(struct vm *vm)
-{
-	return *vm->sp++;
-}
-
-static void frame_push(struct vm *vm, struct insn *ip, aint *sp)
-{
-	struct frame *frame;
-
-	if (vm->frames_count == vm->frames_cap) {
-		if (vm->frames_cap)
-			vm->frames_cap *= ARRAY_GROWTH_FACTOR;
-		else
-			vm->frames_cap = INITIAL_CALL_STACK_CAPACITY;
-		vm->frames = xrealloc(vm->frames,
-				      vm->frames_cap * sizeof(*vm->frames));
-	}
-
-	frame = &vm->frames[vm->frames_count++];
-	frame->ip = ip;
-	frame->sp = sp;
-	frame->bp = vm->bp;
-	frame->closure = vm->closure;
-	frame->nargs = vm->nargs;
-}
-
-static struct insn *frame_restore(struct vm *vm)
-{
-	struct frame *frame;
-
-	frame = &vm->frames[--vm->frames_count];
-	vm->sp = frame->sp;
-	vm->bp = frame->bp;
-	vm->closure = frame->closure;
-	vm->nargs = frame->nargs;
-	return frame->ip;
-}
-
-static aint *copy_args(const aint *sp, int32_t n, size_t extra)
-{
-	aint *args = xmalloc(((size_t)n + extra) * sizeof(*args));
-	int32_t i;
-
-	for (i = 0; i < n; i++)
-		args[i] = sp[n - 1 - i];
-
-	return args;
-}
-
-static inline aint *var_addr(uint8_t kind, int32_t index, aint *glob, aint *bp,
-			     void *closure, int32_t nargs)
-{
-	switch (kind) {
-	case K_GLO:
-		return glob;
-	case K_LOC:
-		return bp - 1 - index;
-	case K_ARG:
-		return bp + (nargs - 1 - index);
-	default:
-		return (aint *)closure + index + CLOSURE_CAPTURE_OFFSET;
-	}
-}
-
-static inline aint load_var(const struct insn *in, aint *bp, void *closure,
-			    int32_t nargs)
-{
-	return *var_addr(in->kind, in->a, in->glob, bp, closure, nargs);
-}
-
-static inline aint *insn_var_addr(const struct insn *in, aint *bp,
-				  void *closure, int32_t nargs)
-{
-	return var_addr(in->kind, in->a, in->glob, bp, closure, nargs);
-}
-
-static inline aint load_capture(const struct capture *cap, aint *bp,
-				void *closure, int32_t nargs)
-{
-	return *var_addr(cap->kind, cap->index, cap->glob, bp, closure, nargs);
+	in->handler(vm, in);
 }
 
 static void call_builtin(struct vm *vm, const struct insn *in)
@@ -178,45 +40,202 @@ static void call_builtin(struct vm *vm, const struct insn *in)
 	aint *args;
 	aint result;
 
-	args = copy_args(vm->sp, in->b, 0);
-	sync_gc(vm->sp);
+	args = vm_reversed_args(vm, in, in->b);
 	result = in->bi->fn(args, in->b);
-	free(args);
-	vm->sp += in->b;
-	vm_push(vm, result);
+	vm_release_args(args, in->b);
+	vm_push(in, result);
 }
 
-static void op_binop(struct vm *vm, struct insn *in)
+static void require_unboxed(const struct insn *in, aint x, aint y)
 {
+	if (!UNBOXED(x) || !UNBOXED(y))
+		die_at(in->unit->name, in->raw,
+		       "binary operator 0x%02X expects unboxed operands",
+		       in->kind);
+}
+
+static inline aint *binop_args(struct vm *vm, struct insn *in, aint *x, aint *y)
+{
+	aint *args;
+
+	args = vm_args(vm, in, 2);
+	*y = args[0];
+	*x = args[1];
+	return args;
+}
+
+static inline aint *unboxed_binop_args(struct vm *vm, struct insn *in, aint *x,
+				       aint *y)
+{
+	aint *args;
+
+	args = binop_args(vm, in, x, y);
+	require_unboxed(in, *x, *y);
+	return args;
+}
+
+static inline aint *divmod_args(struct vm *vm, struct insn *in, aint *x,
+				aint *y)
+{
+	aint *args;
+
+	args = unboxed_binop_args(vm, in, x, y);
+	if (UNBOX(*y) == 0)
+		die_at(in->unit->name, in->raw, "%s by zero",
+		       in->kind == BC_BINOP_DIV ? "division" : "modulo");
+	if (UNBOX(*x) == INT64_MIN && UNBOX(*y) == -1)
+		die_at(in->unit->name, in->raw, "integer overflow in %s",
+		       in->kind == BC_BINOP_DIV ? "division" : "modulo");
+	return args;
+}
+
+static inline void binop_result(struct vm *vm, struct insn *in, aint *args,
+				aint result)
+{
+	vm_replace_args(args, 2, result);
+	dispatch_next(vm, in + 1);
+}
+
+static void op_add(struct vm *vm, struct insn *in)
+{
+	aint *args;
 	aint x, y;
 
-	y = vm_pop(vm);
-	x = vm_pop(vm);
-	vm_push(vm, binops[in->kind]((void *)x, (void *)y));
-	dispatch_next(vm, in + 1);
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) + UNBOX(y)));
+}
+
+static void op_sub(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y, result;
+
+	args = binop_args(vm, in, &x, &y);
+	if (UNBOXED(x) || UNBOXED(y))
+		require_unboxed(in, x, y);
+
+	if (UNBOXED(x))
+		result = BOX(UNBOX(x) - UNBOX(y));
+	else
+		result = BOX(x - y);
+	binop_result(vm, in, args, result);
+}
+
+static void op_mul(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) * UNBOX(y)));
+}
+
+static void op_div(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = divmod_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) / UNBOX(y)));
+}
+
+static void op_mod(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = divmod_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) % UNBOX(y)));
+}
+
+static void op_lt(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) < UNBOX(y)));
+}
+
+static void op_le(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) <= UNBOX(y)));
+}
+
+static void op_gt(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) > UNBOX(y)));
+}
+
+static void op_ge(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) >= UNBOX(y)));
+}
+
+static void op_eq(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(x == y));
+}
+
+static void op_ne(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) != UNBOX(y)));
+}
+
+static void op_and(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) && UNBOX(y)));
+}
+
+static void op_or(struct vm *vm, struct insn *in)
+{
+	aint *args;
+	aint x, y;
+
+	args = unboxed_binop_args(vm, in, &x, &y);
+	binop_result(vm, in, args, BOX(UNBOX(x) || UNBOX(y)));
 }
 
 static void op_const(struct vm *vm, struct insn *in)
 {
-	vm_push(vm, in->imm);
+	vm_push(in, in->imm);
 	dispatch_next(vm, in + 1);
-}
-
-static void *make_string(struct vm *vm, const struct insn *in)
-{
-	aint string_arg[1];
-
-	string_arg[0] = (aint)in->str;
-	sync_gc(vm->sp);
-	return Bstring(string_arg);
 }
 
 static void op_string(struct vm *vm, struct insn *in)
 {
+	aint *args;
 	void *object;
 
-	object = make_string(vm, in);
-	vm_push(vm, (aint)object);
+	vm_push(in, (aint)in->str);
+	args = vm_args(vm, in, 1);
+	object = Bstring(args);
+	vm_release_args(args, 1);
+	vm_push(in, (aint)object);
 	dispatch_next(vm, in + 1);
 }
 
@@ -227,13 +246,12 @@ static void op_sexp(struct vm *vm, struct insn *in)
 	int32_t n;
 
 	n = in->a;
-	args = copy_args(vm->sp, n, SEXP_TAG_SLOT_COUNT);
-	args[n] = in->imm;
-	sync_gc(vm->sp);
+	vm_require(vm, in, n);
+	vm_push(in, in->imm);
+	args = vm_reversed_args(vm, in, n + SEXP_TAG_SLOT_COUNT);
 	object = Bsexp(args, BOX(n + SEXP_TAG_SLOT_COUNT));
-	free(args);
-	vm->sp += n;
-	vm_push(vm, (aint)object);
+	vm_release_args(args, n + SEXP_TAG_SLOT_COUNT);
+	vm_push(in, (aint)object);
 	dispatch_next(vm, in + 1);
 }
 
@@ -244,12 +262,10 @@ static void op_barray(struct vm *vm, struct insn *in)
 	int32_t n;
 
 	n = in->a;
-	args = copy_args(vm->sp, n, 0);
-	sync_gc(vm->sp);
+	args = vm_reversed_args(vm, in, n);
 	object = Barray(args, BOX(n));
-	free(args);
-	vm->sp += n;
-	vm_push(vm, (aint)object);
+	vm_release_args(args, n);
+	vm_push(in, (aint)object);
 	dispatch_next(vm, in + 1);
 }
 
@@ -258,24 +274,23 @@ static void op_sti(struct vm *vm, struct insn *in)
 	aint *ref;
 	aint v;
 
-	v = vm_pop(vm);
-	ref = (aint *)vm_pop(vm);
+	v = vm_pop(vm, in);
+	ref = (aint *)vm_pop(vm, in);
 	*ref = v;
-	vm_push(vm, v);
+	vm_push(in, v);
 	dispatch_next(vm, in + 1);
 }
 
 static void op_sta(struct vm *vm, struct insn *in)
 {
-	aint v, i, x;
+	aint *args;
+	aint v;
 
-	v = vm->sp[STA_VALUE_INDEX];
-	i = vm->sp[STA_INDEX_INDEX];
-	x = vm->sp[STA_OBJECT_INDEX];
-	sync_gc(vm->sp);
-	Bsta((void *)x, i, (void *)v);
-	vm->sp += STA_CONSUMED_SLOTS;
-	*vm->sp = v;
+	args = vm_args(vm, in, STA_OBJECT_INDEX + 1);
+	Bsta((void *)args[STA_OBJECT_INDEX], args[STA_INDEX_INDEX],
+	     (void *)args[STA_VALUE_INDEX]);
+	v = args[STA_VALUE_INDEX];
+	vm_replace_args(args, STA_OBJECT_INDEX + 1, v);
 	dispatch_next(vm, in + 1);
 }
 
@@ -284,16 +299,27 @@ static void op_jmp(struct vm *vm, struct insn *in)
 	dispatch_next(vm, in->target);
 }
 
-static void op_cjmp(struct vm *vm, struct insn *in)
+static void op_cjmpz(struct vm *vm, struct insn *in)
 {
 	struct insn *next;
 	aint v;
-	int zero;
 
 	next = in + 1;
-	v = vm_pop(vm);
-	zero = UNBOX(v) == 0;
-	if ((in->op == I_CJMPZ && zero) || (in->op == I_CJMPNZ && !zero))
+	v = vm_pop(vm, in);
+	if (UNBOX(v) == 0)
+		next = in->target;
+
+	dispatch_next(vm, next);
+}
+
+static void op_cjmpnz(struct vm *vm, struct insn *in)
+{
+	struct insn *next;
+	aint v;
+
+	next = in + 1;
+	v = vm_pop(vm, in);
+	if (UNBOX(v) != 0)
 		next = in->target;
 
 	dispatch_next(vm, next);
@@ -304,12 +330,16 @@ static void op_end(struct vm *vm, struct insn *in)
 	struct insn *next;
 	aint result;
 
-	result = vm_pop(vm);
-	if (vm->frames_count == 0)
+	result = vm_pop(vm, in);
+	if (vm_sp() != vm->operand_base)
+		die_at(in->unit->name, in->raw,
+		       "END requires exactly one operand, have %zu",
+		       (size_t)(vm->operand_base - vm_sp()) + 1);
+	if (!vm->bp[FRAME_SAVED_IP])
 		return;
 
 	next = frame_restore(vm);
-	vm_push(vm, result);
+	vm_push(in, result);
 	dispatch_next(vm, next);
 }
 
@@ -317,7 +347,7 @@ static void op_ret(struct vm *vm, struct insn *in)
 {
 	struct insn *next;
 
-	if (vm->frames_count == 0)
+	if (!vm->bp[FRAME_SAVED_IP])
 		return;
 
 	next = frame_restore(vm);
@@ -326,87 +356,132 @@ static void op_ret(struct vm *vm, struct insn *in)
 
 static void op_drop(struct vm *vm, struct insn *in)
 {
-	vm->sp++;
+	(void)vm_pop(vm, in);
 	dispatch_next(vm, in + 1);
 }
 
 static void op_dup(struct vm *vm, struct insn *in)
 {
+	aint *args;
 	aint v;
 
-	v = *vm->sp;
-	vm_push(vm, v);
+	args = vm_args(vm, in, 1);
+	v = *args;
+	vm_push(in, v);
 	dispatch_next(vm, in + 1);
 }
 
 static void op_swap(struct vm *vm, struct insn *in)
 {
+	aint *args;
 	aint t;
 
-	t = vm->sp[0];
-	vm->sp[0] = vm->sp[1];
-	vm->sp[1] = t;
+	args = vm_args(vm, in, 2);
+	t = args[0];
+	args[0] = args[1];
+	args[1] = t;
 	dispatch_next(vm, in + 1);
 }
 
 static void op_elem(struct vm *vm, struct insn *in)
 {
-	aint i, p, r;
+	aint *args;
+	aint result;
 
-	i = vm->sp[0];
-	p = vm->sp[1];
-	sync_gc(vm->sp);
-	r = (aint)Belem((void *)p, i);
-	vm->sp++;
-	*vm->sp = r;
+	args = vm_args(vm, in, 2);
+	result = (aint)Belem((void *)args[1], args[0]);
+	vm_replace_args(args, 2, result);
 	dispatch_next(vm, in + 1);
 }
 
-static void op_ld(struct vm *vm, struct insn *in)
+static void op_ld_glo(struct vm *vm, struct insn *in)
 {
-	vm_push(vm, load_var(in, vm->bp, vm->closure, vm->nargs));
+	vm_push(in, *in->glob);
+	dispatch_next(vm, in + 1);
+}
+
+static void op_ld_loc(struct vm *vm, struct insn *in)
+{
+	vm_push(in, vm->bp[FRAME_LOCALS - in->a]);
+	dispatch_next(vm, in + 1);
+}
+
+static void op_ld_arg(struct vm *vm, struct insn *in)
+{
+	vm_push(in, *arg_addr(vm, in->a));
+	dispatch_next(vm, in + 1);
+}
+
+static void op_ld_clo(struct vm *vm, struct insn *in)
+{
+	vm_push(in, *closure_addr(vm, in->a));
 	dispatch_next(vm, in + 1);
 }
 
 static void op_lda(struct vm *vm, struct insn *in)
 {
-	vm_push(vm, (aint)insn_var_addr(in, vm->bp, vm->closure, vm->nargs));
+	vm_push(in, (aint)insn_var_addr(vm, in));
 	dispatch_next(vm, in + 1);
 }
 
-static void op_st(struct vm *vm, struct insn *in)
+static void op_st_glo(struct vm *vm, struct insn *in)
 {
-	*insn_var_addr(in, vm->bp, vm->closure, vm->nargs) = *vm->sp;
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	*in->glob = *args;
+	dispatch_next(vm, in + 1);
+}
+
+static void op_st_loc(struct vm *vm, struct insn *in)
+{
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	vm->bp[FRAME_LOCALS - in->a] = *args;
+	dispatch_next(vm, in + 1);
+}
+
+static void op_st_arg(struct vm *vm, struct insn *in)
+{
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	*arg_addr(vm, in->a) = *args;
+	dispatch_next(vm, in + 1);
+}
+
+static void op_st_clo(struct vm *vm, struct insn *in)
+{
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	*closure_addr(vm, in->a) = *args;
 	dispatch_next(vm, in + 1);
 }
 
 static void op_begin(struct vm *vm, struct insn *in)
 {
-	int32_t n;
-
-	if (vm->call_nargs >= 0 && vm->call_nargs != in->a)
+	if (UNBOX(vm->bp[FRAME_NARGS]) != in->a)
 		die_at(in->unit->name, in->raw,
-		       "arity mismatch: function expects %d arguments, got %d",
-		       in->a, vm->call_nargs);
+		       "arity mismatch: function expects %d arguments, got %ld",
+		       in->a, (long)UNBOX(vm->bp[FRAME_NARGS]));
 
-	vm->nargs = in->a;
-	for (n = 0; n < in->b; n++)
-		vm_push(vm, BOX(0));
-
+	vm_init_locals(vm, in, in->b);
 	dispatch_next(vm, in + 1);
 }
 
 static void op_call(struct vm *vm, struct insn *in)
 {
 	struct insn *next;
+	aint *args;
 
 	if (in->bi) {
 		call_builtin(vm, in);
 		next = in + 1;
 	} else {
-		frame_push(vm, in + 1, vm->sp + in->b);
-		vm->bp = vm->sp;
-		vm->call_nargs = in->b;
+		args = vm_args(vm, in, in->b);
+		frame_push(vm, in, in + 1, args + in->b, in->b);
 		next = in->target;
 	}
 
@@ -416,63 +491,63 @@ static void op_call(struct vm *vm, struct insn *in)
 static void op_callc(struct vm *vm, struct insn *in)
 {
 	struct insn *target;
+	aint *args;
 	aint c;
 
-	c = vm->sp[in->a];
+	args = vm_args(vm, in, in->a + CLOSURE_CAPTURE_OFFSET);
+	c = args[in->a];
 	if (UNBOXED(c) || TAG(TO_DATA(c)->data_header) != CLOSURE_TAG)
 		die_at(in->unit->name, in->raw,
 		       "CALLC applied to a non-closure value");
 
 	target = ((struct insn **)c)[CLOSURE_ENTRY_INDEX];
-	frame_push(vm, in + 1, vm->sp + in->a + CLOSURE_CAPTURE_OFFSET);
-	vm->closure = (void *)c;
-	vm->bp = vm->sp;
-	vm->call_nargs = in->a;
+	frame_push(vm, in, in + 1, args + in->a + CLOSURE_CAPTURE_OFFSET,
+		   in->a);
 	dispatch_next(vm, target);
 }
 
 static void op_closure(struct vm *vm, struct insn *in)
 {
-	aint *tmp;
-	struct capture *cap;
+	aint *args;
 	void *object;
-	size_t size;
 	int32_t n, i;
 
 	n = in->b;
-	size = (size_t)n + CLOSURE_CAPTURE_OFFSET;
-	tmp = xmalloc(size * sizeof(*tmp));
-	tmp[CLOSURE_ENTRY_INDEX] = (aint)in->target;
+	for (i = n - 1; i >= 0; i--)
+		vm_push(in, load_capture(vm, &in->caps[i]));
+	vm_push(in, (aint)in->target);
 
-	for (i = 0; i < n; i++) {
-		cap = &in->caps[i];
-		tmp[i + CLOSURE_CAPTURE_OFFSET] =
-			load_capture(cap, vm->bp, vm->closure, vm->nargs);
-	}
-
-	sync_gc(vm->sp);
-	object = Bclosure(tmp, BOX(n));
-	free(tmp);
-	vm_push(vm, (aint)object);
+	args = vm_args(vm, in, n + CLOSURE_CAPTURE_OFFSET);
+	object = Bclosure(args, BOX(n));
+	vm_release_args(args, n + CLOSURE_CAPTURE_OFFSET);
+	vm_push(in, (aint)object);
 	dispatch_next(vm, in + 1);
 }
 
 static void op_tag(struct vm *vm, struct insn *in)
 {
-	*vm->sp = Btag((void *)*vm->sp, in->imm, BOX(in->a));
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	*args = Btag((void *)*args, in->imm, BOX(in->a));
 	dispatch_next(vm, in + 1);
 }
 
 static void op_array(struct vm *vm, struct insn *in)
 {
-	*vm->sp = Barray_patt((void *)*vm->sp, BOX(in->a));
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	*args = Barray_patt((void *)*args, BOX(in->a));
 	dispatch_next(vm, in + 1);
 }
 
 static void op_fail(struct vm *vm, struct insn *in)
 {
-	sync_gc(vm->sp);
-	Bmatch_failure((void *)*vm->sp, (char *)in->name, BOX(in->a),
+	aint *args;
+
+	args = vm_args(vm, in, 1);
+	Bmatch_failure((void *)*args, (char *)in->unit->name, BOX(in->a),
 		       BOX(in->b));
 	dispatch_next(vm, in + 1);
 }
@@ -484,32 +559,33 @@ static void op_line(struct vm *vm, struct insn *in)
 
 static void op_patt(struct vm *vm, struct insn *in)
 {
-	aint x, y;
+	aint *args;
+	aint result;
 
+	args = vm_args(vm, in, in->kind == PATT_STRING ? 2 : 1);
 	switch (in->kind) {
 	case PATT_STRING:
-		y = vm_pop(vm);
-		x = vm_pop(vm);
-		vm_push(vm, Bstring_patt((void *)x, (void *)y));
+		result = Bstring_patt((void *)args[1], (void *)args[0]);
+		vm_replace_args(args, 2, result);
 		break;
 	case PATT_STRING_TAG:
-		*vm->sp = Bstring_tag_patt((void *)*vm->sp);
+		*args = Bstring_tag_patt((void *)*args);
 		break;
 	case PATT_ARRAY_TAG:
-		*vm->sp = Barray_tag_patt((void *)*vm->sp);
+		*args = Barray_tag_patt((void *)*args);
 		break;
 	case PATT_SEXP_TAG:
-		*vm->sp = Bsexp_tag_patt((void *)*vm->sp);
+		*args = Bsexp_tag_patt((void *)*args);
 		break;
 	case PATT_BOXED:
-		*vm->sp = Bboxed_patt((void *)*vm->sp);
+		*args = Bboxed_patt((void *)*args);
 		break;
 	case PATT_UNBOXED:
-		*vm->sp = Bunboxed_patt((void *)*vm->sp);
+		*args = Bunboxed_patt((void *)*args);
 		break;
 	case PATT_CLOSURE:
 	default:
-		*vm->sp = Bclosure_tag_patt((void *)*vm->sp);
+		*args = Bclosure_tag_patt((void *)*args);
 		break;
 	}
 
@@ -529,8 +605,20 @@ static void op_invalid(struct vm *vm, struct insn *in)
 	       in->op);
 }
 
-static const opcode_handler dispatch[UINT8_MAX + 1] = {
-	[I_BINOP] = op_binop,
+static const opcode_handler handlers[UINT8_MAX + 1] = {
+	[I_BINOP_ADD] = op_add,
+	[I_BINOP_SUB] = op_sub,
+	[I_BINOP_MUL] = op_mul,
+	[I_BINOP_DIV] = op_div,
+	[I_BINOP_MOD] = op_mod,
+	[I_BINOP_LT] = op_lt,
+	[I_BINOP_LE] = op_le,
+	[I_BINOP_GT] = op_gt,
+	[I_BINOP_GE] = op_ge,
+	[I_BINOP_EQ] = op_eq,
+	[I_BINOP_NE] = op_ne,
+	[I_BINOP_AND] = op_and,
+	[I_BINOP_OR] = op_or,
 	[I_CONST] = op_const,
 	[I_STRING] = op_string,
 	[I_SEXP] = op_sexp,
@@ -543,11 +631,17 @@ static const opcode_handler dispatch[UINT8_MAX + 1] = {
 	[I_DUP] = op_dup,
 	[I_SWAP] = op_swap,
 	[I_ELEM] = op_elem,
-	[I_LD] = op_ld,
+	[I_LD_GLO] = op_ld_glo,
+	[I_LD_LOC] = op_ld_loc,
+	[I_LD_ARG] = op_ld_arg,
+	[I_LD_CLO] = op_ld_clo,
 	[I_LDA] = op_lda,
-	[I_ST] = op_st,
-	[I_CJMPZ] = op_cjmp,
-	[I_CJMPNZ] = op_cjmp,
+	[I_ST_GLO] = op_st_glo,
+	[I_ST_LOC] = op_st_loc,
+	[I_ST_ARG] = op_st_arg,
+	[I_ST_CLO] = op_st_clo,
+	[I_CJMPZ] = op_cjmpz,
+	[I_CJMPNZ] = op_cjmpnz,
 	[I_BEGIN] = op_begin,
 	[I_BEGINC] = op_begin,
 	[I_CLOSURE] = op_closure,
@@ -563,13 +657,15 @@ static const opcode_handler dispatch[UINT8_MAX + 1] = {
 	[I_EOF + 1 ... UINT8_MAX] = op_invalid,
 };
 
-void run(struct insn *entry, aint *sp0)
+opcode_handler execute_handler(uint8_t op)
 {
-	struct vm vm = {
-		.sp = sp0,
-		.bp = sp0,
-		.call_nargs = UNKNOWN_ARITY,
-	};
+	return handlers[op];
+}
 
+void run(struct insn *entry)
+{
+	struct vm vm = { 0 };
+
+	frame_push(&vm, entry, NULL, vm_sp(), entry->a);
 	dispatch_next(&vm, entry);
 }
