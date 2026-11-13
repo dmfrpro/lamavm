@@ -23,8 +23,6 @@ $(BUILD)/lama-custom-vm: $(VM_OBJS) $(BUILD)/runtime.o $(BUILD)/gc.o $(BUILD)/pr
 $(BUILD)/%.o: src/%.c $(VM_HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) -Iinclude -I$(RUNTIME_DIR) -c $< -o $@
 
-$(BUILD)/execute.o: CFLAGS += -foptimize-sibling-calls
-
 $(BUILD)/runtime.o: $(RUNTIME_DIR)/runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) $(RUNTIME_FLAGS) -c $< -o $@
 

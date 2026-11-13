@@ -8,8 +8,6 @@ extern const char *const progname;
 _Noreturn void die(const char *fmt, ...);
 _Noreturn void die_at(const char *unit, size_t off, const char *fmt, ...);
 void *xmalloc(size_t n);
-void *xrealloc(void *p, size_t n);
-char *xstrdup(const char *s);
 const char *path_basename(const char *p);
 
 #endif

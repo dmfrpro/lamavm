@@ -1,4 +1,4 @@
-# Predecoded direct-threaded tail-call Lama interpreter
+# Inirect-threaded Lama interpreter
 
 ## Example usage with Nix devShell
 

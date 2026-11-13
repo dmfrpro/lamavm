@@ -40,24 +40,6 @@ void *xmalloc(size_t n)
 	return p;
 }
 
-void *xrealloc(void *p, size_t n)
-{
-	void *q = realloc(p, n ? n : 1);
-
-	if (!q)
-		die("out of memory (%zu bytes)", n);
-	return q;
-}
-
-char *xstrdup(const char *s)
-{
-	char *p = strdup(s);
-
-	if (!p)
-		die("out of memory");
-	return p;
-}
-
 const char *path_basename(const char *p)
 {
 	const char *s = strrchr(p, '/');

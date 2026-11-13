@@ -4,54 +4,62 @@
 #include "unit.h"
 #include "util.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *dir_of(const char *path)
+static void dir_of(const char *path, char dir[PATH_MAX])
 {
 	const char *slash = strrchr(path, '/');
+	size_t n;
 
-	if (!slash)
-		return xstrdup(".");
+	if (!slash) {
+		memcpy(dir, ".", sizeof("."));
+		return;
+	}
 
-	return strndup(path, (size_t)(slash - path));
+	n = (size_t)(slash - path);
+	if (n >= PATH_MAX)
+		die("bytecode directory path is too long");
+	memcpy(dir, path, n);
+	dir[n] = '\0';
 }
 
-static char *unit_name_of(const char *path)
+static void unit_name_of(const char *path, char name[PATH_MAX])
 {
 	const char *base = path_basename(path);
-	char *name = xstrdup(base);
-	size_t n = strlen(name);
+	size_t n = strlen(base);
 	const size_t extension_len = sizeof(".bc") - 1;
 
+	if (n >= PATH_MAX)
+		die("bytecode unit name is too long");
+	memcpy(name, base, n + 1);
 	if (n > extension_len && strcmp(name + n - extension_len, ".bc") == 0)
 		name[n - extension_len] = '\0';
-
-	return name;
 }
 
 int main(int argc, char **argv)
 {
 	const char *file = NULL;
-	struct unit *main_unit;
 	struct unit *u;
-	struct unit *dep;
-	char *dir, *name;
+	char dir[PATH_MAX], name[PATH_MAX];
 	aint *globals;
+	size_t main_unit, dep;
 	size_t total_globals = 0;
 	size_t goff = 0;
-	size_t i, j;
+	size_t i, j, count;
 	int argi;
+
+	execute_stack_init(0);
+	__init();
+	unit_init();
 
 	for (argi = 1; argi < argc; argi++) {
 		if (strcmp(argv[argi], "-I") == 0) {
 			if (++argi >= argc)
 				die("option -I requires a directory argument");
-			if (search_paths_count == MAX_SEARCH_PATHS)
-				die("too many -I options");
-
-			search_paths[search_paths_count++] = argv[argi];
+			unit_add_search_path(argv[argi]);
 		} else if (strcmp(argv[argi], "--") == 0) {
 			argi++;
 			break;
@@ -68,47 +76,45 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	name = unit_name_of(file);
+	unit_name_of(file, name);
 	main_unit = unit_load(file, name);
-	free(name);
-	unit_decode(main_unit);
+	unit_validate(unit_get(main_unit));
 
-	for (i = 0; i < units_count; i++) {
-		u = units[i];
-		dir = dir_of(u->path);
-		u->import_units =
-			xmalloc(u->imports_count * sizeof(*u->import_units));
+	for (i = 0; i < unit_count(); i++) {
+		u = unit_at(i);
+		dir_of(unit_path(u), dir);
+		count = u->imports_count;
+		for (j = 0; j < count; j++) {
+			const char *import;
 
-		for (j = 0; j < u->imports_count; j++) {
-			if (strcmp(u->imports[j], "Std") == 0)
+			u = unit_at(i);
+			import = unit_import_at(u, j);
+			if (strcmp(import, "Std") == 0)
 				continue;
 
-			dep = unit_find_file(u->imports[j], dir);
-			u->import_units[j] = dep;
-			if (!dep->insns)
-				unit_decode(dep);
+			dep = unit_find_file(import, dir);
+			if (!unit_get(dep)->validated)
+				unit_validate(unit_get(dep));
 		}
-
-		free(dir);
 	}
 
-	for (i = 0; i < units_count; i++)
-		total_globals += units[i]->globals_count;
+	for (i = 0; i < unit_count(); i++)
+		total_globals += unit_at(i)->globals_count;
 
 	globals = execute_stack_init(total_globals);
-	for (i = 0; i < units_count; i++) {
-		units[i]->globals = globals + goff;
-		for (j = 0; j < units[i]->globals_count; j++)
-			units[i]->globals[j] = BOX(0);
+	for (i = 0; i < unit_count(); i++) {
+		u = unit_at(i);
+		u->globals = globals + goff;
+		for (j = 0; j < u->globals_count; j++)
+			u->globals[j] = BOX(0);
 
-		goff += units[i]->globals_count;
+		goff += u->globals_count;
 	}
 
 	link_units();
-	__init();
 	set_args(argc - argi, argv + argi);
 
-	run(&main_unit->insns[0]);
+	run(unit_get(main_unit));
 
 	__shutdown();
 	return EXIT_SUCCESS;

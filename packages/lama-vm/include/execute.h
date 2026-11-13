@@ -8,6 +8,6 @@
 
 aint *execute_stack_init(size_t total_globals);
 opcode_handler execute_handler(uint8_t op);
-void run(struct insn *entry);
+void run(struct unit *entry);
 
 #endif

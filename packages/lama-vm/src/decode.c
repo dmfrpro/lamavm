@@ -2,17 +2,14 @@
 
 #include "execute.h"
 #include "format.h"
+#include "unit.h"
 #include "unit_internal.h"
 #include "util.h"
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
-enum {
-	INVALID_INDEX = -1,
-	INITIAL_INSN_CAPACITY = 256,
-};
+enum { INVALID_INDEX = -1 };
 
 struct code_reader {
 	struct unit *unit;
@@ -23,9 +20,6 @@ struct code_reader {
 
 struct decoder {
 	struct code_reader reader;
-	size_t *fn_ids;
-	size_t cur_fn;
-	size_t index;
 	int32_t cur_nargs;
 	int32_t cur_nlocals;
 	int32_t cur_ncaps;
@@ -34,7 +28,7 @@ struct decoder {
 static inline void reader_need(struct code_reader *reader, size_t count)
 {
 	if (reader->pos + count > reader->unit->code_size)
-		die_at(reader->unit->name, reader->start,
+		die_at(unit_name(reader->unit), reader->start,
 		       "truncated opcode 0x%02X: need %d bytes", reader->opcode,
 		       (int)count);
 }
@@ -70,7 +64,8 @@ static void decode_var(struct decoder *d, struct insn *in)
 
 	if (kind != K_GLO) {
 		if (v < 0)
-			die_at(u->name, reader->start, "negative %s index %d",
+			die_at(unit_name(u), reader->start,
+			       "negative %s index %d",
 			       kind == K_LOC ? "local" :
 			       kind == K_ARG ? "argument" :
 					       "capture",
@@ -80,14 +75,14 @@ static void decode_var(struct decoder *d, struct insn *in)
 			kind == K_ARG ? d->cur_nargs :
 					d->cur_ncaps;
 		if (bound >= 0 && v >= bound)
-			die_at(u->name, reader->start,
+			die_at(unit_name(u), reader->start,
 			       "%s index %d is out of range [0, %d)",
 			       kind == K_LOC ? "local" :
 			       kind == K_ARG ? "argument" :
 					       "capture",
 			       v, bound);
 	} else if (v >= 0 && (size_t)v >= u->globals_count) {
-		die_at(u->name, reader->start,
+		die_at(unit_name(u), reader->start,
 		       "global index %d is out of range [0, %zu)", v,
 		       u->globals_count);
 	} else if (v < 0) {
@@ -103,10 +98,10 @@ static void decode_begin(struct decoder *d, struct insn *in)
 	na = reader_i32(reader);
 	nl = reader_i32(reader);
 	if (na < 0)
-		die_at(reader->unit->name, reader->start,
+		die_at(unit_name(reader->unit), reader->start,
 		       "BEGIN with negative argument count %d", na);
 	if (nl < 0)
-		die_at(reader->unit->name, reader->start,
+		die_at(unit_name(reader->unit), reader->start,
 		       "BEGIN with negative local count %d", nl);
 
 	in->op = reader->opcode == BC_BEGIN ? I_BEGIN : I_BEGINC;
@@ -118,16 +113,13 @@ static void decode_begin(struct decoder *d, struct insn *in)
 	if (reader->opcode == BC_BEGINC) {
 		nc = reader_i32(reader);
 		if (nc < 0)
-			die_at(reader->unit->name, reader->start,
+			die_at(unit_name(reader->unit), reader->start,
 			       "BEGIN_CLOSURE with negative capture count %d",
 			       nc);
 
 		in->imm = nc;
 		d->cur_ncaps = nc;
 	}
-
-	d->cur_fn = (int32_t)d->index;
-	d->fn_ids[d->index] = d->cur_fn;
 }
 
 static void decode_closure(struct decoder *d, struct insn *in)
@@ -141,30 +133,28 @@ static void decode_closure(struct decoder *d, struct insn *in)
 	t = reader_i32(reader);
 	nc = reader_i32(reader);
 	if (nc < 0)
-		die_at(u->name, reader->start,
+		die_at(unit_name(u), reader->start,
 		       "CLOSURE with negative capture count %d", nc);
 
 	in->op = I_CLOSURE;
 	in->a = t;
 	in->b = nc;
+	in->caps = u->code + reader->pos;
 	if (t < 0)
 		in->ext_name = external_string_at(u, t, reader->start);
 
-	in->caps = xmalloc((size_t)nc * sizeof(*in->caps));
 	for (capture_idx = 0; capture_idx < nc; capture_idx++) {
 		reader_need(reader, 1);
 		kind = u->code[reader->pos++];
 		v = reader_i32(reader);
 		if (kind > K_CLO)
-			die_at(u->name, reader->start,
+			die_at(unit_name(u), reader->start,
 			       "CLOSURE capture %d has invalid kind %u",
 			       capture_idx, kind);
 
-		in->caps[capture_idx].kind = kind;
-		in->caps[capture_idx].index = v;
 		if (kind != K_GLO) {
 			if (v < 0)
-				die_at(u->name, reader->start,
+				die_at(unit_name(u), reader->start,
 				       "CLOSURE capture %d has negative index %d",
 				       capture_idx, v);
 
@@ -172,16 +162,15 @@ static void decode_closure(struct decoder *d, struct insn *in)
 				kind == K_ARG ? d->cur_nargs :
 						d->cur_ncaps;
 			if (bound >= 0 && v >= bound)
-				die_at(u->name, reader->start,
+				die_at(unit_name(u), reader->start,
 				       "CLOSURE capture %d index %d is out of range [0, %d)",
 				       capture_idx, v, bound);
 		} else if (v >= 0 && (size_t)v >= u->globals_count) {
-			die_at(u->name, reader->start,
+			die_at(unit_name(u), reader->start,
 			       "CLOSURE capture %d global index %d is out of range [0, %zu)",
 			       capture_idx, v, u->globals_count);
 		} else if (v < 0) {
-			in->caps[capture_idx].ext_name =
-				external_string_at(u, v, reader->start);
+			external_string_at(u, v, reader->start);
 		}
 	}
 }
@@ -213,7 +202,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 		s = reader_i32(reader);
 		cnt = reader_i32(reader);
 		if (cnt < 0)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "SEXP with negative field count %d", cnt);
 
 		in->op = I_SEXP;
@@ -271,7 +260,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 	case BC_CALLC:
 		v = reader_i32(reader);
 		if (v < 0)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "CALLC with negative argument count %d", v);
 
 		in->op = I_CALLC;
@@ -281,7 +270,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 		t = reader_i32(reader);
 		na = reader_i32(reader);
 		if (na < 0)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "CALL with negative argument count %d", na);
 
 		in->op = I_CALL;
@@ -294,7 +283,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 		s = reader_i32(reader);
 		cnt = reader_i32(reader);
 		if (cnt < 0)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "TAG with negative field count %d", cnt);
 
 		in->op = I_TAG;
@@ -305,8 +294,8 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 	case BC_ARRAY:
 		v = reader_i32(reader);
 		if (v < 0)
-			die_at(u->name, start, "ARRAY with negative length %d",
-			       v);
+			die_at(unit_name(u), start,
+			       "ARRAY with negative length %d", v);
 
 		in->op = I_ARRAY;
 		in->a = v;
@@ -332,7 +321,7 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 	case BC_BARRAY:
 		v = reader_i32(reader);
 		if (v < 0)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "BARRAY with negative element count %d", v);
 
 		in->op = I_BARRAY;
@@ -341,143 +330,153 @@ static void decode_instruction(struct decoder *d, struct insn *in)
 	case BC_EOF:
 		in->op = I_EOF;
 		if (reader->pos != u->code_size)
-			die_at(u->name, start,
+			die_at(unit_name(u), start,
 			       "unexpected bytes after the EOF opcode (%zu bytes)",
 			       u->code_size - reader->pos);
 		break;
 	default:
-		die_at(u->name, start, "unknown opcode 0x%02X", opc);
+		die_at(unit_name(u), start, "unknown opcode 0x%02X", opc);
 	}
 }
 
-static void resolve_targets(struct unit *u, const size_t *fn_ids)
+static void decode_reader(struct decoder *d, struct insn *in)
 {
-	struct insn *in, *tgt;
-	size_t n = u->code_size;
-	size_t i;
-	int32_t t, ti;
-	int ok;
-
-	for (i = 0; i < u->insns_count; i++) {
-		in = &u->insns[i];
-		if (in->op != I_JMP && in->op != I_CJMPZ &&
-		    in->op != I_CJMPNZ && in->op != I_CALL &&
-		    in->op != I_CLOSURE)
-			continue;
-		if (in->ext_name)
-			continue;
-
-		t = in->a;
-		if (t < 0 || (size_t)t >= n - 1)
-			die_at(u->name, in->raw,
-			       "control-flow target %d is outside the code section",
-			       t);
-
-		ti = u->offset_map[t];
-		if (ti < 0)
-			die_at(u->name, in->raw,
-			       "control-flow target %d is not an instruction boundary",
-			       t);
-
-		tgt = &u->insns[ti];
-		if (in->op == I_CALL || in->op == I_CLOSURE) {
-			ok = in->op == I_CALL ?
-				     tgt->op == I_BEGIN :
-				     tgt->op == I_BEGIN || tgt->op == I_BEGINC;
-			if (!ok)
-				die_at(u->name, in->raw,
-				       "%s target %d does not point to a function entry (BEGIN%s)",
-				       in->op == I_CALL ? "CALL" : "CLOSURE", t,
-				       in->op == I_CALL ? "" :
-							  " or BEGIN_CLOSURE");
-			if (in->op == I_CLOSURE && in->b != tgt->imm)
-				die_at(u->name, in->raw,
-				       "CLOSURE capture count %d does not match target capture count %d",
-				       in->b, (int)tgt->imm);
-		} else if (fn_ids[i] != fn_ids[ti]) {
-			die_at(u->name, in->raw,
-			       "jump target %d is outside the enclosing function body",
-			       t);
-		}
-
-		in->target = tgt;
-	}
+	memset(in, 0, sizeof(*in));
+	d->reader.start = d->reader.pos;
+	d->reader.opcode = d->reader.unit->code[d->reader.pos++];
+	in->raw = (int32_t)d->reader.start;
+	in->unit_id = d->reader.unit->id;
+	decode_instruction(d, in);
+	in->next = d->reader.unit->code + d->reader.pos;
+	in->handler = execute_handler(in->op);
 }
 
-static void resolve_public_entries(struct unit *u)
+static void decoder_init(struct decoder *d, struct unit *u, size_t pos)
 {
-	struct pubsym *p;
-	struct insn *e;
-	size_t i;
-	int32_t ti;
-
-	for (i = 0; i < u->pubs_count; i++) {
-		p = &u->pubs[i];
-		if (p->flag != PUB_FUNCTION)
-			continue;
-
-		ti = u->offset_map[p->offset];
-		if (ti < 0)
-			die("%s: function \"%s\" offset %d is not a boundary",
-			    u->name, p->name, p->offset);
-
-		e = &u->insns[ti];
-		if (e->op != I_BEGIN && e->op != I_BEGINC)
-			die("%s: function \"%s\" offset %d is not BEGIN",
-			    u->name, p->name, p->offset);
-
-		p->entry = e;
-	}
+	memset(d, 0, sizeof(*d));
+	d->reader.unit = u;
+	d->reader.pos = pos;
+	d->cur_nargs = INVALID_INDEX;
+	d->cur_nlocals = INVALID_INDEX;
+	d->cur_ncaps = INVALID_INDEX;
 }
 
-void unit_decode(struct unit *u)
+void decode_insn(struct unit *u, const uint8_t *code, struct insn *in)
 {
 	struct decoder d;
-	struct insn *in;
-	size_t cap = INITIAL_INSN_CAPACITY;
-	size_t n = u->code_size;
-	size_t idx, i;
 
-	memset(&d, 0, sizeof(d));
-	d.reader.unit = u;
-	d.cur_fn = SIZE_MAX;
-	d.cur_nargs = INVALID_INDEX;
-	d.cur_nlocals = INVALID_INDEX;
-	d.cur_ncaps = INVALID_INDEX;
+	if (code < u->code || code >= u->code + u->code_size)
+		die("%s: instruction pointer is outside the code section",
+		    unit_name(u));
+	decoder_init(&d, u, (size_t)(code - u->code));
+	decode_reader(&d, in);
+}
 
-	u->offset_map = xmalloc(n * sizeof(*u->offset_map));
-	for (i = 0; i < n; i++)
-		u->offset_map[i] = INVALID_INDEX;
+void decode_capture(const struct insn *in, int32_t index, struct capture *cap)
+{
+	const uint8_t *p = in->caps + (size_t)index * (1 + BC_I32_SIZE);
 
-	u->insns = xmalloc(cap * sizeof(*u->insns));
-	d.fn_ids = xmalloc(cap * sizeof(*d.fn_ids));
+	memset(cap, 0, sizeof(*cap));
+	cap->kind = p[0];
+	cap->index = rd_i32(p + 1);
+	if (cap->kind == K_GLO && cap->index < 0)
+		cap->ext_name = external_string_at(unit_get(in->unit_id),
+						   cap->index, in->raw);
+}
 
-	while (d.reader.pos < n) {
-		d.reader.start = d.reader.pos;
-		d.reader.opcode = u->code[d.reader.pos++];
-		if (u->insns_count == cap) {
-			cap *= ARRAY_GROWTH_FACTOR;
-			u->insns = xrealloc(u->insns, cap * sizeof(*u->insns));
-			d.fn_ids = xrealloc(d.fn_ids, cap * sizeof(*d.fn_ids));
-		}
+const uint8_t *decode_find(struct unit *u, int32_t offset, struct insn *in)
+{
+	const uint8_t *code;
 
-		idx = u->insns_count;
-		d.index = idx;
-		in = &u->insns[idx];
-		memset(in, 0, sizeof(*in));
-		in->raw = (int32_t)d.reader.start;
-		in->unit = u;
-		u->offset_map[d.reader.start] = (int32_t)idx;
-		d.fn_ids[idx] = d.cur_fn;
-		decode_instruction(&d, in);
-		in->handler = execute_handler(in->op);
-		u->insns_count++;
+	if (offset < 0 || (size_t)offset >= u->code_size - 1)
+		return NULL;
+	for (code = u->code; code < u->code + u->code_size;) {
+		decode_insn(u, code, in);
+		if (code == u->code + offset)
+			return code;
+		code = in->next;
 	}
+	return NULL;
+}
 
-	if (u->insns_count == 0 || u->insns[u->insns_count - 1].op != I_EOF)
-		die("%s: code section does not terminate with EOF", u->name);
+static size_t function_owner(struct unit *u, int32_t offset)
+{
+	struct insn in;
+	size_t fn = SIZE_MAX;
+	int32_t pos;
 
-	resolve_targets(u, d.fn_ids);
-	resolve_public_entries(u);
-	free(d.fn_ids);
+	for (pos = 0; pos <= offset;) {
+		decode_insn(u, u->code + pos, &in);
+		if (in.op == I_BEGIN || in.op == I_BEGINC)
+			fn = (size_t)pos;
+		if (pos == offset)
+			break;
+		pos = in.next - u->code;
+	}
+	return fn;
+}
+
+static void resolve_target(struct unit *u, struct insn *in)
+{
+	struct insn target;
+	size_t target_fn;
+
+	in->target = decode_find(u, in->a, &target);
+	if (!in->target)
+		die_at(unit_name(u), in->raw,
+		       "control-flow target %d is not an instruction boundary",
+		       in->a);
+
+	if (in->op == I_CALL || in->op == I_CLOSURE) {
+		if (target.op != I_BEGIN &&
+		    (in->op != I_CLOSURE || target.op != I_BEGINC))
+			die_at(unit_name(u), in->raw,
+			       "%s target %d does not point to a function entry (BEGIN%s)",
+			       in->op == I_CALL ? "CALL" : "CLOSURE", in->a,
+			       in->op == I_CALL ? "" : " or BEGIN_CLOSURE");
+		if (in->op == I_CLOSURE && in->b != target.imm)
+			die_at(unit_name(u), in->raw,
+			       "CLOSURE capture count %d does not match target capture count %d",
+			       in->b, (int)target.imm);
+	} else {
+		target_fn = function_owner(u, in->a);
+		if (function_owner(u, in->raw) != target_fn)
+			die_at(unit_name(u), in->raw,
+			       "jump target %d is outside the enclosing function body",
+			       in->a);
+	}
+}
+
+void unit_validate(struct unit *u)
+{
+	struct decoder d;
+	struct insn in = { 0 };
+	struct pubsym *p;
+	size_t i;
+
+	decoder_init(&d, u, 0);
+	while (d.reader.pos < u->code_size) {
+		decode_reader(&d, &in);
+		if ((in.op == I_JMP || in.op == I_CJMPZ || in.op == I_CJMPNZ ||
+		     in.op == I_CALL || in.op == I_CLOSURE) &&
+		    !in.ext_name)
+			resolve_target(u, &in);
+	}
+	if (in.op != I_EOF)
+		die("%s: code section does not terminate with EOF",
+		    unit_name(u));
+
+	for (i = 0; i < u->pubs_count; i++) {
+		p = unit_pub_at(u, i);
+		if (p->flag != PUB_FUNCTION)
+			continue;
+		p->entry = decode_find(u, p->offset, &in);
+		if (!p->entry)
+			die("%s: function \"%s\" offset %d is not a boundary",
+			    unit_name(u), p->name, p->offset);
+		if (in.op != I_BEGIN && in.op != I_BEGINC)
+			die("%s: function \"%s\" offset %d is not BEGIN",
+			    unit_name(u), p->name);
+	}
+	u->validated = 1;
 }

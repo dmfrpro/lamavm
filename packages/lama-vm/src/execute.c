@@ -1,6 +1,9 @@
 #include "execute.h"
 #include "builtins.h"
+#include "decode.h"
 #include "execute_internal.h"
+#include "link.h"
+#include "unit.h"
 #include "util.h"
 
 #include <stdint.h>
@@ -30,11 +33,6 @@ aint *execute_stack_init(size_t total_globals)
 	return globals;
 }
 
-static inline void dispatch_next(struct vm *vm, struct insn *in)
-{
-	in->handler(vm, in);
-}
-
 static void call_builtin(struct vm *vm, const struct insn *in)
 {
 	aint *args;
@@ -49,7 +47,7 @@ static void call_builtin(struct vm *vm, const struct insn *in)
 static void require_unboxed(const struct insn *in, aint x, aint y)
 {
 	if (!UNBOXED(x) || !UNBOXED(y))
-		die_at(in->unit->name, in->raw,
+		die_at(insn_unit_name(in), in->raw,
 		       "binary operator 0x%02X expects unboxed operands",
 		       in->kind);
 }
@@ -81,31 +79,31 @@ static inline aint *divmod_args(struct vm *vm, struct insn *in, aint *x,
 
 	args = unboxed_binop_args(vm, in, x, y);
 	if (UNBOX(*y) == 0)
-		die_at(in->unit->name, in->raw, "%s by zero",
+		die_at(insn_unit_name(in), in->raw, "%s by zero",
 		       in->kind == BC_BINOP_DIV ? "division" : "modulo");
 	if (UNBOX(*x) == INT64_MIN && UNBOX(*y) == -1)
-		die_at(in->unit->name, in->raw, "integer overflow in %s",
+		die_at(insn_unit_name(in), in->raw, "integer overflow in %s",
 		       in->kind == BC_BINOP_DIV ? "division" : "modulo");
 	return args;
 }
 
-static inline void binop_result(struct vm *vm, struct insn *in, aint *args,
-				aint result)
+static inline const uint8_t *binop_result(struct vm *vm, struct insn *in,
+					  aint *args, aint result)
 {
 	vm_replace_args(args, 2, result);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_add(struct vm *vm, struct insn *in)
+static const uint8_t *op_add(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) + UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) + UNBOX(y)));
 }
 
-static void op_sub(struct vm *vm, struct insn *in)
+static const uint8_t *op_sub(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y, result;
@@ -118,115 +116,115 @@ static void op_sub(struct vm *vm, struct insn *in)
 		result = BOX(UNBOX(x) - UNBOX(y));
 	else
 		result = BOX(x - y);
-	binop_result(vm, in, args, result);
+	return binop_result(vm, in, args, result);
 }
 
-static void op_mul(struct vm *vm, struct insn *in)
+static const uint8_t *op_mul(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) * UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) * UNBOX(y)));
 }
 
-static void op_div(struct vm *vm, struct insn *in)
+static const uint8_t *op_div(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = divmod_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) / UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) / UNBOX(y)));
 }
 
-static void op_mod(struct vm *vm, struct insn *in)
+static const uint8_t *op_mod(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = divmod_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) % UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) % UNBOX(y)));
 }
 
-static void op_lt(struct vm *vm, struct insn *in)
+static const uint8_t *op_lt(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) < UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) < UNBOX(y)));
 }
 
-static void op_le(struct vm *vm, struct insn *in)
+static const uint8_t *op_le(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) <= UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) <= UNBOX(y)));
 }
 
-static void op_gt(struct vm *vm, struct insn *in)
+static const uint8_t *op_gt(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) > UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) > UNBOX(y)));
 }
 
-static void op_ge(struct vm *vm, struct insn *in)
+static const uint8_t *op_ge(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) >= UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) >= UNBOX(y)));
 }
 
-static void op_eq(struct vm *vm, struct insn *in)
+static const uint8_t *op_eq(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(x == y));
+	return binop_result(vm, in, args, BOX(x == y));
 }
 
-static void op_ne(struct vm *vm, struct insn *in)
+static const uint8_t *op_ne(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) != UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) != UNBOX(y)));
 }
 
-static void op_and(struct vm *vm, struct insn *in)
+static const uint8_t *op_and(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) && UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) && UNBOX(y)));
 }
 
-static void op_or(struct vm *vm, struct insn *in)
+static const uint8_t *op_or(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint x, y;
 
 	args = unboxed_binop_args(vm, in, &x, &y);
-	binop_result(vm, in, args, BOX(UNBOX(x) || UNBOX(y)));
+	return binop_result(vm, in, args, BOX(UNBOX(x) || UNBOX(y)));
 }
 
-static void op_const(struct vm *vm, struct insn *in)
+static const uint8_t *op_const(struct vm *vm, struct insn *in)
 {
 	vm_push(in, in->imm);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_string(struct vm *vm, struct insn *in)
+static const uint8_t *op_string(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	void *object;
@@ -236,10 +234,10 @@ static void op_string(struct vm *vm, struct insn *in)
 	object = Bstring(args);
 	vm_release_args(args, 1);
 	vm_push(in, (aint)object);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_sexp(struct vm *vm, struct insn *in)
+static const uint8_t *op_sexp(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	void *object;
@@ -252,10 +250,10 @@ static void op_sexp(struct vm *vm, struct insn *in)
 	object = Bsexp(args, BOX(n + SEXP_TAG_SLOT_COUNT));
 	vm_release_args(args, n + SEXP_TAG_SLOT_COUNT);
 	vm_push(in, (aint)object);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_barray(struct vm *vm, struct insn *in)
+static const uint8_t *op_barray(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	void *object;
@@ -266,10 +264,10 @@ static void op_barray(struct vm *vm, struct insn *in)
 	object = Barray(args, BOX(n));
 	vm_release_args(args, n);
 	vm_push(in, (aint)object);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_sti(struct vm *vm, struct insn *in)
+static const uint8_t *op_sti(struct vm *vm, struct insn *in)
 {
 	aint *ref;
 	aint v;
@@ -278,10 +276,10 @@ static void op_sti(struct vm *vm, struct insn *in)
 	ref = (aint *)vm_pop(vm, in);
 	*ref = v;
 	vm_push(in, v);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_sta(struct vm *vm, struct insn *in)
+static const uint8_t *op_sta(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint v;
@@ -291,76 +289,76 @@ static void op_sta(struct vm *vm, struct insn *in)
 	     (void *)args[STA_VALUE_INDEX]);
 	v = args[STA_VALUE_INDEX];
 	vm_replace_args(args, STA_OBJECT_INDEX + 1, v);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_jmp(struct vm *vm, struct insn *in)
+static const uint8_t *op_jmp(struct vm *vm, struct insn *in)
 {
-	dispatch_next(vm, in->target);
+	return in->target;
 }
 
-static void op_cjmpz(struct vm *vm, struct insn *in)
+static const uint8_t *op_cjmpz(struct vm *vm, struct insn *in)
 {
-	struct insn *next;
+	const uint8_t *next;
 	aint v;
 
-	next = in + 1;
+	next = in->next;
 	v = vm_pop(vm, in);
 	if (UNBOX(v) == 0)
 		next = in->target;
 
-	dispatch_next(vm, next);
+	return next;
 }
 
-static void op_cjmpnz(struct vm *vm, struct insn *in)
+static const uint8_t *op_cjmpnz(struct vm *vm, struct insn *in)
 {
-	struct insn *next;
+	const uint8_t *next;
 	aint v;
 
-	next = in + 1;
+	next = in->next;
 	v = vm_pop(vm, in);
 	if (UNBOX(v) != 0)
 		next = in->target;
 
-	dispatch_next(vm, next);
+	return next;
 }
 
-static void op_end(struct vm *vm, struct insn *in)
+static const uint8_t *op_end(struct vm *vm, struct insn *in)
 {
-	struct insn *next;
+	const uint8_t *next;
 	aint result;
 
 	result = vm_pop(vm, in);
 	if (vm_sp() != vm->operand_base)
-		die_at(in->unit->name, in->raw,
+		die_at(insn_unit_name(in), in->raw,
 		       "END requires exactly one operand, have %zu",
 		       (size_t)(vm->operand_base - vm_sp()) + 1);
 	if (!vm->bp[FRAME_SAVED_IP])
-		return;
+		return NULL;
 
 	next = frame_restore(vm);
 	vm_push(in, result);
-	dispatch_next(vm, next);
+	return next;
 }
 
-static void op_ret(struct vm *vm, struct insn *in)
+static const uint8_t *op_ret(struct vm *vm, struct insn *in)
 {
-	struct insn *next;
+	const uint8_t *next;
 
 	if (!vm->bp[FRAME_SAVED_IP])
-		return;
+		return NULL;
 
 	next = frame_restore(vm);
-	dispatch_next(vm, next);
+	return next;
 }
 
-static void op_drop(struct vm *vm, struct insn *in)
+static const uint8_t *op_drop(struct vm *vm, struct insn *in)
 {
 	(void)vm_pop(vm, in);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_dup(struct vm *vm, struct insn *in)
+static const uint8_t *op_dup(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint v;
@@ -368,10 +366,10 @@ static void op_dup(struct vm *vm, struct insn *in)
 	args = vm_args(vm, in, 1);
 	v = *args;
 	vm_push(in, v);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_swap(struct vm *vm, struct insn *in)
+static const uint8_t *op_swap(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint t;
@@ -380,10 +378,10 @@ static void op_swap(struct vm *vm, struct insn *in)
 	t = args[0];
 	args[0] = args[1];
 	args[1] = t;
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_elem(struct vm *vm, struct insn *in)
+static const uint8_t *op_elem(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint result;
@@ -391,173 +389,177 @@ static void op_elem(struct vm *vm, struct insn *in)
 	args = vm_args(vm, in, 2);
 	result = (aint)Belem((void *)args[1], args[0]);
 	vm_replace_args(args, 2, result);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_ld_glo(struct vm *vm, struct insn *in)
+static const uint8_t *op_ld_glo(struct vm *vm, struct insn *in)
 {
 	vm_push(in, *in->glob);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_ld_loc(struct vm *vm, struct insn *in)
+static const uint8_t *op_ld_loc(struct vm *vm, struct insn *in)
 {
 	vm_push(in, vm->bp[FRAME_LOCALS - in->a]);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_ld_arg(struct vm *vm, struct insn *in)
+static const uint8_t *op_ld_arg(struct vm *vm, struct insn *in)
 {
 	vm_push(in, *arg_addr(vm, in->a));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_ld_clo(struct vm *vm, struct insn *in)
+static const uint8_t *op_ld_clo(struct vm *vm, struct insn *in)
 {
 	vm_push(in, *closure_addr(vm, in->a));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_lda(struct vm *vm, struct insn *in)
+static const uint8_t *op_lda(struct vm *vm, struct insn *in)
 {
 	vm_push(in, (aint)insn_var_addr(vm, in));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_st_glo(struct vm *vm, struct insn *in)
+static const uint8_t *op_st_glo(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	*in->glob = *args;
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_st_loc(struct vm *vm, struct insn *in)
+static const uint8_t *op_st_loc(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	vm->bp[FRAME_LOCALS - in->a] = *args;
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_st_arg(struct vm *vm, struct insn *in)
+static const uint8_t *op_st_arg(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	*arg_addr(vm, in->a) = *args;
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_st_clo(struct vm *vm, struct insn *in)
+static const uint8_t *op_st_clo(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	*closure_addr(vm, in->a) = *args;
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_begin(struct vm *vm, struct insn *in)
+static const uint8_t *op_begin(struct vm *vm, struct insn *in)
 {
 	if (UNBOX(vm->bp[FRAME_NARGS]) != in->a)
-		die_at(in->unit->name, in->raw,
+		die_at(insn_unit_name(in), in->raw,
 		       "arity mismatch: function expects %d arguments, got %ld",
 		       in->a, (long)UNBOX(vm->bp[FRAME_NARGS]));
 
 	vm_init_locals(vm, in, in->b);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_call(struct vm *vm, struct insn *in)
+static const uint8_t *op_call(struct vm *vm, struct insn *in)
 {
-	struct insn *next;
+	const uint8_t *next;
 	aint *args;
 
 	if (in->bi) {
 		call_builtin(vm, in);
-		next = in + 1;
+		next = in->next;
 	} else {
 		args = vm_args(vm, in, in->b);
-		frame_push(vm, in, in + 1, args + in->b, in->b);
+		frame_push(vm, in, in->next, args + in->b, in->b);
 		next = in->target;
 	}
 
-	dispatch_next(vm, next);
+	return next;
 }
 
-static void op_callc(struct vm *vm, struct insn *in)
+static const uint8_t *op_callc(struct vm *vm, struct insn *in)
 {
-	struct insn *target;
+	const uint8_t *target;
 	aint *args;
 	aint c;
 
 	args = vm_args(vm, in, in->a + CLOSURE_CAPTURE_OFFSET);
 	c = args[in->a];
 	if (UNBOXED(c) || TAG(TO_DATA(c)->data_header) != CLOSURE_TAG)
-		die_at(in->unit->name, in->raw,
+		die_at(insn_unit_name(in), in->raw,
 		       "CALLC applied to a non-closure value");
 
-	target = ((struct insn **)c)[CLOSURE_ENTRY_INDEX];
-	frame_push(vm, in, in + 1, args + in->a + CLOSURE_CAPTURE_OFFSET,
+	target = ((const uint8_t **)c)[CLOSURE_ENTRY_INDEX];
+	frame_push(vm, in, in->next, args + in->a + CLOSURE_CAPTURE_OFFSET,
 		   in->a);
-	dispatch_next(vm, target);
+	return target;
 }
 
-static void op_closure(struct vm *vm, struct insn *in)
+static const uint8_t *op_closure(struct vm *vm, struct insn *in)
 {
+	struct capture cap;
 	aint *args;
 	void *object;
 	int32_t n, i;
 
 	n = in->b;
-	for (i = n - 1; i >= 0; i--)
-		vm_push(in, load_capture(vm, &in->caps[i]));
+	for (i = n - 1; i >= 0; i--) {
+		decode_capture(in, i, &cap);
+		link_capture(in, &cap);
+		vm_push(in, load_capture(vm, &cap));
+	}
 	vm_push(in, (aint)in->target);
 
 	args = vm_args(vm, in, n + CLOSURE_CAPTURE_OFFSET);
 	object = Bclosure(args, BOX(n));
 	vm_release_args(args, n + CLOSURE_CAPTURE_OFFSET);
 	vm_push(in, (aint)object);
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_tag(struct vm *vm, struct insn *in)
+static const uint8_t *op_tag(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	*args = Btag((void *)*args, in->imm, BOX(in->a));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_array(struct vm *vm, struct insn *in)
+static const uint8_t *op_array(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
 	*args = Barray_patt((void *)*args, BOX(in->a));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_fail(struct vm *vm, struct insn *in)
+static const uint8_t *op_fail(struct vm *vm, struct insn *in)
 {
 	aint *args;
 
 	args = vm_args(vm, in, 1);
-	Bmatch_failure((void *)*args, (char *)in->unit->name, BOX(in->a),
+	Bmatch_failure((void *)*args, (char *)insn_unit_name(in), BOX(in->a),
 		       BOX(in->b));
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_line(struct vm *vm, struct insn *in)
+static const uint8_t *op_line(struct vm *vm, struct insn *in)
 {
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_patt(struct vm *vm, struct insn *in)
+static const uint8_t *op_patt(struct vm *vm, struct insn *in)
 {
 	aint *args;
 	aint result;
@@ -589,20 +591,21 @@ static void op_patt(struct vm *vm, struct insn *in)
 		break;
 	}
 
-	dispatch_next(vm, in + 1);
+	return in->next;
 }
 
-static void op_eof(struct vm *vm, struct insn *in)
+static const uint8_t *op_eof(struct vm *vm, struct insn *in)
 {
 	(void)vm;
 	(void)in;
+	return NULL;
 }
 
-static void op_invalid(struct vm *vm, struct insn *in)
+static const uint8_t *op_invalid(struct vm *vm, struct insn *in)
 {
 	(void)vm;
-	die_at(in->unit->name, in->raw, "internal error: undecoded opcode %d",
-	       in->op);
+	die_at(insn_unit_name(in), in->raw,
+	       "internal error: undecoded opcode %d", in->op);
 }
 
 static const opcode_handler handlers[UINT8_MAX + 1] = {
@@ -662,10 +665,18 @@ opcode_handler execute_handler(uint8_t op)
 	return handlers[op];
 }
 
-void run(struct insn *entry)
+void run(struct unit *entry)
 {
 	struct vm vm = { 0 };
+	struct insn in;
+	const uint8_t *code = entry->code;
 
-	frame_push(&vm, entry, NULL, vm_sp(), entry->a);
-	dispatch_next(&vm, entry);
+	decode_insn(entry, code, &in);
+	frame_push(&vm, &in, NULL, vm_sp(), in.a);
+	while (code) {
+		link_insn(&in);
+		code = in.handler(&vm, &in);
+		if (code)
+			decode_insn(unit_of_code(code), code, &in);
+	}
 }

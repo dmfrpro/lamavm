@@ -110,6 +110,11 @@ def _():
     return with_code(simple_body())
 
 
+@case("missing_eof_opcode")
+def _():
+    return with_code(simple_body() + bytes([0x5B]) + i32(-1))
+
+
 @case("trailing_bytes_after_eof")
 def _():
     return with_code(simple_body() + bytes([0xFF, 0x00, 0x00]))

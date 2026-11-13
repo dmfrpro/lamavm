@@ -5,7 +5,6 @@
 #include "runtime.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
-#define ARRAY_GROWTH_FACTOR 2
 
 enum bytecode_opcode {
 	BC_BINOP_ADD = 0x01,
@@ -139,7 +138,7 @@ struct builtin;
 struct vm;
 struct insn;
 
-typedef void (*opcode_handler)(struct vm *vm, struct insn *in);
+typedef const uint8_t *(*opcode_handler)(struct vm *vm, struct insn *in);
 
 struct insn {
 	opcode_handler handler;
@@ -148,26 +147,28 @@ struct insn {
 	int32_t a, b;
 	aint imm;
 	const char *str;
-	struct insn *target;
+	const uint8_t *next;
+	const uint8_t *target;
+	const uint8_t *caps;
 	aint *glob;
-	struct capture *caps;
 	const struct builtin *bi;
 	const char *ext_name;
 	int32_t raw;
-	const struct unit *unit;
+	size_t unit_id;
 };
 
 struct pubsym {
 	const char *name;
 	int32_t offset;
 	uint8_t flag;
-	struct insn *entry;
+	const uint8_t *entry;
 	aint *glob;
 };
 
 struct unit {
-	char *name;
-	char *path;
+	size_t id;
+	size_t name;
+	size_t path;
 	uint8_t *image;
 	size_t image_size;
 	const char *strings;
@@ -175,16 +176,12 @@ struct unit {
 	size_t globals_count;
 	aint *globals;
 	size_t imports_count;
-	const char **imports;
-	struct unit **import_units;
+	size_t imports;
 	size_t pubs_count;
-	struct pubsym *pubs;
+	size_t pubs;
 	const uint8_t *code;
 	size_t code_size;
-	struct insn *insns;
-	size_t insns_count;
-	int32_t *offset_map;
-	size_t next_global;
+	int validated;
 };
 
 #endif

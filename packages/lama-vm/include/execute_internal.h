@@ -2,6 +2,7 @@
 #define LAMA_VM_EXECUTE_INTERNAL_H
 
 #include "execute.h"
+#include "unit.h"
 #include "util.h"
 
 #include <stdint.h>
@@ -33,10 +34,15 @@ static inline void vm_set_sp(aint *sp)
 	__gc_stack_top = (size_t)(sp - 1);
 }
 
+static inline const char *insn_unit_name(const struct insn *in)
+{
+	return unit_name(unit_get(in->unit_id));
+}
+
 static _Noreturn void vm_underflow(const struct insn *in, int32_t n,
 				   size_t available)
 {
-	die_at(in->unit->name, in->raw,
+	die_at(insn_unit_name(in), in->raw,
 	       "operand stack underflow: need %d values, have %zu", n,
 	       available);
 }
@@ -49,7 +55,7 @@ static inline void vm_require(const struct vm *vm, const struct insn *in,
 
 	sp = vm_sp();
 	if (__builtin_expect(sp > vm->operand_base, 0))
-		die_at(in->unit->name, in->raw,
+		die_at(insn_unit_name(in), in->raw,
 		       "internal error: invalid operand stack boundary");
 
 	available = (size_t)(vm->operand_base - sp);
@@ -69,7 +75,7 @@ static inline aint *vm_reserve(const struct insn *in, int32_t n)
 
 	sp = vm_sp();
 	if ((size_t)(sp - vm_stack_mem - STACK_RESERVE_WORDS) < (size_t)n)
-		die_at(in->unit->name, in->raw, "operand stack overflow");
+		die_at(insn_unit_name(in), in->raw, "operand stack overflow");
 
 	sp -= n;
 	vm_set_sp(sp);
@@ -133,7 +139,7 @@ static inline void vm_init_locals(struct vm *vm, const struct insn *in,
 }
 
 static inline void frame_push(struct vm *vm, const struct insn *in,
-			      struct insn *return_ip, aint *caller_sp,
+			      const uint8_t *return_ip, aint *caller_sp,
 			      int32_t nargs)
 {
 	aint *bp;
@@ -150,11 +156,11 @@ static inline void frame_push(struct vm *vm, const struct insn *in,
 	vm->operand_base = sp;
 }
 
-static struct insn *frame_restore(struct vm *vm)
+static const uint8_t *frame_restore(struct vm *vm)
 {
-	struct insn *next;
+	const uint8_t *next;
 
-	next = (struct insn *)vm->bp[FRAME_SAVED_IP];
+	next = (const uint8_t *)vm->bp[FRAME_SAVED_IP];
 	vm_set_sp((aint *)vm->bp[FRAME_SAVED_SP]);
 	vm->operand_base = (aint *)vm->bp[FRAME_SAVED_BASE];
 	vm->bp = (aint *)vm->bp[FRAME_SAVED_BP];
