@@ -131,14 +131,18 @@ struct capture {
 	uint8_t kind;
 	int32_t index;
 	aint *glob;
-	const char *ext_name;
 };
 
 struct builtin;
 struct vm;
 struct insn;
 
-typedef const uint8_t *(*opcode_handler)(struct vm *vm, struct insn *in);
+struct code_ref {
+	size_t unit_id;
+	int32_t offset;
+};
+
+typedef struct code_ref (*opcode_handler)(struct vm *vm, struct insn *in);
 
 struct insn {
 	opcode_handler handler;
@@ -146,32 +150,31 @@ struct insn {
 	uint8_t kind;
 	int32_t a, b;
 	aint imm;
-	const char *str;
-	const uint8_t *next;
-	const uint8_t *target;
-	const uint8_t *caps;
+	int32_t str;
+	struct code_ref next;
+	struct code_ref target;
+	size_t caps;
 	aint *glob;
 	const struct builtin *bi;
-	const char *ext_name;
 	int32_t raw;
 	size_t unit_id;
 };
 
 struct pubsym {
-	const char *name;
+	int32_t name;
 	int32_t offset;
 	uint8_t flag;
-	const uint8_t *entry;
+	int32_t entry;
 	aint *glob;
+	size_t unit_id;
 };
 
 struct unit {
 	size_t id;
 	size_t name;
 	size_t path;
-	uint8_t *image;
+	size_t image;
 	size_t image_size;
-	const char *strings;
 	size_t strings_size;
 	size_t globals_count;
 	aint *globals;
@@ -179,7 +182,7 @@ struct unit {
 	size_t imports;
 	size_t pubs_count;
 	size_t pubs;
-	const uint8_t *code;
+	size_t code_offset;
 	size_t code_size;
 	int validated;
 };

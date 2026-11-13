@@ -17,6 +17,5 @@ const char *unit_import_at(const struct unit *u, size_t index);
 struct pubsym *unit_pub_at(const struct unit *u, size_t index);
 size_t unit_load(const char *path, const char *name);
 size_t unit_find_file(const char *name, const char *relative_to);
-struct unit *unit_of_code(const uint8_t *code);
 
 #endif

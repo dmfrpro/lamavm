@@ -8,8 +8,8 @@ BEAR ?= bear
 COMPILE_COMMANDS := $(ROOT)/compile_commands.json
 
 RUNTIME_FLAGS := -Wno-shift-negative-value
-VM_SRCS := src/vm.c src/util.c src/unit.c src/decode.c src/link.c \
-	   src/builtins.c src/execute.c
+VM_SRCS := src/vm.c src/util.c src/meta.c src/reader.c src/unit.c \
+	   src/decode.c src/link.c src/builtins.c src/execute.c
 VM_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(VM_SRCS))
 VM_HEADERS := $(wildcard include/*.h)
 

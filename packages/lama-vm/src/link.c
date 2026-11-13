@@ -3,6 +3,7 @@
 #include "builtins.h"
 #include "decode.h"
 #include "unit.h"
+#include "unit_internal.h"
 #include "util.h"
 
 #include <string.h>
@@ -17,7 +18,8 @@ static struct pubsym *pub_find(const char *name, uint8_t flag)
 		u = unit_at(i);
 		for (j = 0; j < u->pubs_count; j++) {
 			p = unit_pub_at(u, j);
-			if (p->flag == flag && strcmp(p->name, name) == 0)
+			if (p->flag == flag &&
+			    strcmp(string_at(u, p->name, 0), name) == 0)
 				return p;
 		}
 	}
@@ -30,70 +32,77 @@ static void link_call(struct insn *in)
 	struct unit *u = unit_get(in->unit_id);
 	struct pubsym *p;
 	struct insn target;
+	const char *name;
 
-	if (!in->ext_name) {
-		in->target = u->code + in->a;
+	if (in->a >= 0) {
+		in->target = (struct code_ref){ in->unit_id, in->a };
 		return;
 	}
 
-	p = pub_find(in->ext_name, PUB_FUNCTION);
+	name = external_string_at(u, in->a, in->raw);
+	p = pub_find(name, PUB_FUNCTION);
 	if (p) {
 		if (in->op == I_CLOSURE) {
-			decode_insn(unit_of_code(p->entry), p->entry, &target);
+			decode_insn(unit_get(p->unit_id), p->entry, &target);
 			if (in->b != target.imm)
 				die_at(unit_name(u), in->raw,
 				       "CLOSURE capture count %d does not match target capture count %d",
 				       in->b, (int)target.imm);
 		}
-		in->target = p->entry;
+		in->target = (struct code_ref){ p->unit_id, p->entry };
 		return;
 	}
 
 	if (in->op != I_CALL)
 		die_at(unit_name(u), in->raw,
-		       "undefined external function \"%s\"", in->ext_name);
+		       "undefined external function \"%s\"", name);
 
-	in->bi = builtin_find(in->ext_name);
+	in->bi = builtin_find(name);
 	if (!in->bi)
 		die_at(unit_name(u), in->raw,
-		       "undefined external function \"%s\"", in->ext_name);
+		       "undefined external function \"%s\"", name);
 }
 
 static void link_global(struct insn *in)
 {
 	struct unit *u = unit_get(in->unit_id);
 	struct pubsym *p;
+	const char *name;
 
 	if (in->kind != K_GLO)
 		return;
-	if (!in->ext_name) {
+	if (in->a >= 0) {
 		in->glob = u->globals + in->a;
 		return;
 	}
 
-	p = pub_find(in->ext_name, PUB_GLOBAL);
+	name = external_string_at(u, in->a, in->raw);
+	p = pub_find(name, PUB_GLOBAL);
 	if (!p)
 		die_at(unit_name(u), in->raw,
-		       "undefined external global \"%s\"", in->ext_name);
+		       "undefined external global \"%s\"", name);
 
 	in->glob = p->glob;
 }
 
 void link_capture(const struct insn *in, struct capture *cap)
 {
+	struct unit *u = unit_get(in->unit_id);
 	struct pubsym *p;
+	const char *name;
 
 	if (cap->kind != K_GLO)
 		return;
-	if (!cap->ext_name) {
-		cap->glob = unit_get(in->unit_id)->globals + cap->index;
+	if (cap->index >= 0) {
+		cap->glob = u->globals + cap->index;
 		return;
 	}
 
-	p = pub_find(cap->ext_name, PUB_GLOBAL);
+	name = external_string_at(u, cap->index, in->raw);
+	p = pub_find(name, PUB_GLOBAL);
 	if (!p)
-		die_at(unit_name(unit_get(in->unit_id)), in->raw,
-		       "undefined external global \"%s\"", cap->ext_name);
+		die_at(unit_name(u), in->raw,
+		       "undefined external global \"%s\"", name);
 
 	cap->glob = p->glob;
 }
@@ -108,7 +117,7 @@ void link_insn(struct insn *in)
 	case I_JMP:
 	case I_CJMPZ:
 	case I_CJMPNZ:
-		in->target = unit_get(in->unit_id)->code + in->a;
+		in->target = (struct code_ref){ in->unit_id, in->a };
 		break;
 	case I_LD_GLO:
 	case I_LDA:
@@ -120,20 +129,18 @@ void link_insn(struct insn *in)
 	}
 }
 
-static void validate_external_refs(struct insn *in)
+static void link_references(struct insn *in)
 {
 	struct capture cap;
 	int32_t k;
 
-	if (in->ext_name)
-		link_insn(in);
+	link_insn(in);
 	if (in->op != I_CLOSURE)
 		return;
 
 	for (k = 0; k < in->b; k++) {
 		decode_capture(in, k, &cap);
-		if (cap.ext_name)
-			link_capture(in, &cap);
+		link_capture(in, &cap);
 	}
 }
 
@@ -141,7 +148,7 @@ void link_units(void)
 {
 	struct unit *u;
 	struct insn in;
-	const uint8_t *code;
+	size_t pos;
 	size_t i, j;
 
 	for (i = 0; i < unit_count(); i++) {
@@ -154,10 +161,10 @@ void link_units(void)
 
 	for (i = 0; i < unit_count(); i++) {
 		u = unit_at(i);
-		for (code = u->code; code < u->code + u->code_size;
-		     code = in.next) {
-			decode_insn(u, code, &in);
-			validate_external_refs(&in);
+		for (pos = 0; pos < u->code_size;
+		     pos = (size_t)in.next.offset) {
+			decode_insn(u, (int32_t)pos, &in);
+			link_references(&in);
 		}
 	}
 }

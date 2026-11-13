@@ -31,15 +31,6 @@ _Noreturn void die_at(const char *unit, size_t off, const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
-void *xmalloc(size_t n)
-{
-	void *p = malloc(n ? n : 1);
-
-	if (!p)
-		die("out of memory (%zu bytes)", n);
-	return p;
-}
-
 const char *path_basename(const char *p)
 {
 	const char *s = strrchr(p, '/');

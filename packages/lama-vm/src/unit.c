@@ -1,6 +1,8 @@
 #include "unit.h"
 
 #include "format.h"
+#include "meta.h"
+#include "reader.h"
 #include "unit_internal.h"
 #include "util.h"
 
@@ -8,14 +10,9 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-enum {
-	INITIAL_ROOT_CAPACITY = 8,
-	INITIAL_UNIT_CAPACITY = 8,
-	ARRAY_GROWTH_FACTOR = 2
-};
+enum { INITIAL_UNIT_CAPACITY = 8, ARRAY_GROWTH_FACTOR = 2 };
 
 struct meta_array {
 	size_t handle;
@@ -23,122 +20,8 @@ struct meta_array {
 	size_t capacity;
 };
 
-static aint *meta_roots;
-static size_t meta_roots_count;
-static size_t meta_roots_cap;
 static struct meta_array units;
 static struct meta_array search_paths;
-
-static aint *array_contents(void *object)
-{
-	data *obj = object;
-
-	if (!obj)
-		die("out of memory allocating decoder metadata");
-	return (aint *)obj->contents;
-}
-
-static void check_array_size(size_t n)
-{
-	if (n > SIZE_MAX / sizeof(aint))
-		die("decoder metadata array is too large: %zu elements", n);
-}
-
-static aint *alloc_array_contents(size_t n)
-{
-	aint *contents;
-	size_t i;
-
-	contents = array_contents(alloc_array(n));
-	for (i = 0; i < n; i++)
-		contents[i] = BOX(0);
-	return contents;
-}
-
-static void reserve_handle(void)
-{
-	aint *new_roots;
-	size_t new_cap;
-
-	if (meta_roots_count < meta_roots_cap)
-		return;
-	if (meta_roots_cap > SIZE_MAX / ARRAY_GROWTH_FACTOR)
-		die("too many decoder metadata objects");
-
-	new_cap = meta_roots_cap ? meta_roots_cap * ARRAY_GROWTH_FACTOR :
-				   INITIAL_ROOT_CAPACITY;
-	check_array_size(new_cap);
-	new_roots = alloc_array_contents(new_cap);
-	memcpy(new_roots, meta_roots, meta_roots_count * sizeof(*new_roots));
-	meta_roots = new_roots;
-	meta_roots_cap = new_cap;
-}
-
-static size_t store_object(void *object)
-{
-	size_t handle = meta_roots_count++;
-
-	meta_roots[handle] = (aint)object;
-	return handle;
-}
-
-static void meta_init(void)
-{
-	push_extra_root((void **)&meta_roots);
-	meta_roots = alloc_array_contents(INITIAL_ROOT_CAPACITY);
-	meta_roots_cap = INITIAL_ROOT_CAPACITY;
-}
-
-static size_t meta_alloc_bytes(size_t n)
-{
-	data *obj;
-
-	reserve_handle();
-	obj = alloc_string(n);
-	if (!obj)
-		die("out of memory allocating %zu bytes of decoder metadata",
-		    n);
-	return store_object(obj->contents);
-}
-
-static size_t meta_alloc_array(size_t n)
-{
-	check_array_size(n);
-	reserve_handle();
-	return store_object(alloc_array_contents(n));
-}
-
-static void *meta_get(size_t handle)
-{
-	if (handle >= meta_roots_count || meta_roots[handle] == BOX(0))
-		die("invalid decoder metadata handle %zu", handle);
-	return (void *)meta_roots[handle];
-}
-
-static size_t meta_alloc_string(const char *s)
-{
-	size_t handle;
-	size_t n = strlen(s);
-
-	handle = meta_alloc_bytes(n);
-	memcpy(meta_get(handle), s, n + 1);
-	return handle;
-}
-
-static void meta_replace_array(size_t handle, size_t n)
-{
-	aint *old;
-	aint *new;
-	size_t old_n;
-
-	(void)meta_get(handle);
-	check_array_size(n);
-	new = alloc_array_contents(n);
-	old = meta_get(handle);
-	old_n = LEN(TO_DATA(old)->data_header);
-	memcpy(new, old, (old_n < n ? old_n : n) * sizeof(*new));
-	meta_roots[handle] = (aint)new;
-}
 
 static void meta_array_init(struct meta_array *array)
 {
@@ -215,12 +98,12 @@ const char *unit_path(const struct unit *u)
 
 const char *unit_import_at(const struct unit *u, size_t index)
 {
-	const char **imports;
+	const int32_t *imports;
 
 	if (index >= u->imports_count)
 		die("invalid import index %zu in unit %s", index, unit_name(u));
 	imports = meta_get(u->imports);
-	return imports[index];
+	return string_at(u, imports[index], 0);
 }
 
 struct pubsym *unit_pub_at(const struct unit *u, size_t index)
@@ -231,20 +114,20 @@ struct pubsym *unit_pub_at(const struct unit *u, size_t index)
 	return (struct pubsym *)meta_get(u->pubs) + index;
 }
 
-int32_t rd_i32(const uint8_t *p)
+static uint8_t *unit_image(const struct unit *u)
 {
-	uint32_t v = 0;
-	size_t i;
-
-	for (i = 0; i < BC_I32_SIZE; i++)
-		v |= (uint32_t)p[i] << (i * BYTE_WIDTH);
-
-	return (int32_t)v;
+	return meta_get(u->image);
 }
 
-static uint8_t *read_file(const char *path, size_t *size)
+const uint8_t *unit_code(const struct unit *u)
+{
+	return unit_image(u) + u->code_offset;
+}
+
+static size_t read_file(const char *path, size_t *size)
 {
 	FILE *f = fopen(path, "rb");
+	size_t handle;
 	uint8_t *buf;
 	long n;
 
@@ -257,27 +140,29 @@ static uint8_t *read_file(const char *path, size_t *size)
 	if (n < 0)
 		die("cannot determine size of %s", path);
 
-	rewind(f);
-	buf = xmalloc((size_t)n + 1);
+	handle = meta_alloc_bytes((size_t)n);
+	buf = meta_get(handle);
+	if (fseek(f, 0, SEEK_SET) != 0)
+		die("cannot seek %s", path);
 	if (n > 0 && fread(buf, 1, (size_t)n, f) != (size_t)n)
 		die("cannot read %s", path);
 
 	fclose(f);
 	buf[n] = 0;
 	*size = (size_t)n;
-	return buf;
+	return handle;
 }
 
 const char *string_at(const struct unit *u, int32_t off, size_t where)
 {
 	const char *s;
 
-	if (off < 0 || (size_t)off >= u->strings_size)
+	if ((size_t)off >= u->strings_size)
 		die_at(unit_name(u), where,
 		       "string table offset %d is out of range [0, %zu)", off,
 		       u->strings_size);
 
-	s = u->strings + off;
+	s = (const char *)unit_image(u) + BC_HEADER_SIZE + (size_t)off;
 	if (!memchr(s, '\0', u->strings_size - (size_t)off))
 		die_at(unit_name(u), where,
 		       "string at offset %d is not NUL-terminated", off);
@@ -287,7 +172,7 @@ const char *string_at(const struct unit *u, int32_t off, size_t where)
 
 const char *external_string_at(const struct unit *u, int32_t ref, size_t where)
 {
-	return string_at(u, -ref - EXTERNAL_REF_BIAS, where);
+	return string_at(u, -(ref + EXTERNAL_REF_BIAS), where);
 }
 
 struct unit_layout {
@@ -313,7 +198,8 @@ static size_t unit_find_cached(const char *name)
 static size_t unit_create(const char *path, const char *name)
 {
 	struct unit *u;
-	size_t id, name_handle, path_handle;
+	size_t id, name_handle, path_handle, image_handle;
+	size_t image_size;
 
 	name_handle = meta_alloc_string(name);
 	path_handle = meta_alloc_string(path);
@@ -323,32 +209,39 @@ static size_t unit_create(const char *path, const char *name)
 	u->id = id;
 	u->name = name_handle;
 	u->path = path_handle;
-	u->image = read_file(path, &u->image_size);
+
+	image_handle = read_file(path, &image_size);
+	u = unit_get(id);
+	u->image = image_handle;
+	u->image_size = image_size;
 	return id;
 }
 
 static struct unit_layout unit_parse_header(struct unit *u)
 {
+	struct byte_reader reader;
 	struct unit_layout layout;
-	uint64_t off;
+	const uint8_t *magic;
 	int32_t version, strings_size, globals_count, imports_count, pubs_count;
 
 	if (u->image_size < BC_HEADER_SIZE)
 		die("%s: short bytecode header (%zu bytes, need %d)",
 		    unit_path(u), u->image_size, BC_HEADER_SIZE);
 
-	if (memcmp(u->image, "LaMa", BC_MAGIC_SIZE) != 0)
+	reader_init(&reader, u->id, unit_image(u), u->image_size, 0);
+	magic = reader_read(&reader, BC_MAGIC_SIZE);
+	if (memcmp(magic, "LaMa", BC_MAGIC_SIZE) != 0)
 		die("%s: bad magic, expected \"LaMa\"", unit_path(u));
 
-	version = rd_i32(u->image + BC_VERSION_OFFSET);
+	version = reader_i32(&reader);
 	if (version != BC_FORMAT_VERSION)
 		die("%s: unsupported bytecode version %d (expected %d)",
 		    unit_path(u), version, BC_FORMAT_VERSION);
 
-	strings_size = rd_i32(u->image + BC_STRINGS_SIZE_OFFSET);
-	globals_count = rd_i32(u->image + BC_GLOBALS_COUNT_OFFSET);
-	imports_count = rd_i32(u->image + BC_IMPORTS_COUNT_OFFSET);
-	pubs_count = rd_i32(u->image + BC_PUBS_COUNT_OFFSET);
+	strings_size = reader_i32(&reader);
+	globals_count = reader_i32(&reader);
+	imports_count = reader_i32(&reader);
+	pubs_count = reader_i32(&reader);
 
 	if (strings_size < 0)
 		die("%s: negative string table size %d", unit_path(u),
@@ -363,8 +256,7 @@ static struct unit_layout unit_parse_header(struct unit *u)
 		die("%s: negative public symbols count %d", unit_path(u),
 		    pubs_count);
 
-	off = BC_HEADER_SIZE;
-	layout.strings_end = off + (uint64_t)strings_size;
+	layout.strings_end = BC_HEADER_SIZE + (uint64_t)strings_size;
 	layout.imports_end = layout.strings_end +
 			     (uint64_t)BC_IMPORT_SIZE * (uint64_t)imports_count;
 	layout.pubs_end = layout.imports_end +
@@ -377,15 +269,17 @@ static struct unit_layout unit_parse_header(struct unit *u)
 	if (layout.pubs_end == u->image_size)
 		die("%s: missing code section", unit_path(u));
 
-	u->strings = (const char *)u->image + off;
 	u->strings_size = (size_t)strings_size;
 	u->globals_count = (size_t)globals_count;
 	u->imports_count = (size_t)imports_count;
 	u->pubs_count = (size_t)pubs_count;
-	u->code = u->image + layout.pubs_end;
+	u->code_offset = (size_t)layout.pubs_end;
 	u->code_size = u->image_size - layout.pubs_end;
 
-	if (u->code[u->code_size - 1] != BC_EOF)
+	if (u->code_size > INT32_MAX)
+		die("%s: code section is too large: %zu bytes", unit_path(u),
+		    u->code_size);
+	if (unit_code(u)[u->code_size - 1] != BC_EOF)
 		die("%s: code section does not end with the EOF opcode (0xFF)",
 		    unit_path(u));
 
@@ -394,7 +288,8 @@ static struct unit_layout unit_parse_header(struct unit *u)
 
 static void unit_parse_imports(struct unit *u, uint64_t strings_end)
 {
-	const char **imports;
+	struct byte_reader reader;
+	int32_t *imports;
 	size_t handle, id = u->id;
 	size_t import_off;
 	size_t i;
@@ -406,46 +301,54 @@ static void unit_parse_imports(struct unit *u, uint64_t strings_end)
 	u = unit_get(id);
 	u->imports = handle;
 	imports = meta_get(handle);
+	reader_init(&reader, id, unit_image(u), u->image_size, 0);
+	reader_seek(&reader, (size_t)strings_end);
 	for (i = 0; i < u->imports_count; i++) {
-		import_off = strings_end + BC_IMPORT_SIZE * i;
-		so = rd_i32(u->image + import_off);
-		imports[i] = string_at(u, so, import_off);
+		import_off = reader.pos;
+		so = reader_i32(&reader);
+		(void)string_at(u, so, import_off);
+		imports[i] = so;
 	}
 }
 
 static void unit_parse_public(struct unit *u, size_t i, size_t pub_off)
 {
-	const uint8_t *p;
+	struct byte_reader reader;
 	struct pubsym *pub;
+	const char *name;
 	size_t j;
 
-	p = u->image + pub_off;
+	reader_init(&reader, u->id, unit_image(u), u->image_size, 0);
+	reader_seek(&reader, pub_off);
 	pub = unit_pub_at(u, i);
-	pub->name = string_at(u, rd_i32(p), pub_off);
-	pub->offset = rd_i32(p + BC_PUB_OFFSET_OFFSET);
-	pub->flag = p[BC_PUB_FLAG_OFFSET];
+	pub->name = reader_i32(&reader);
+	pub->offset = reader_i32(&reader);
+	pub->flag = reader_u8(&reader);
+	pub->unit_id = u->id;
+	name = string_at(u, pub->name, pub_off);
 
 	if (pub->flag > PUB_GLOBAL)
 		die_at(unit_name(u), pub_off,
 		       "public symbol \"%s\" has invalid flag %u (expected 0 or 1)",
-		       pub->name, pub->flag);
+		       name, pub->flag);
 
 	if (pub->flag == PUB_GLOBAL &&
 	    (pub->offset < 0 || (size_t)pub->offset >= u->globals_count))
 		die_at(unit_name(u), pub_off,
 		       "public global \"%s\" index %d is out of range [0, %zu)",
-		       pub->name, pub->offset, u->globals_count);
+		       name, pub->offset, u->globals_count);
 
 	if (pub->flag == PUB_FUNCTION &&
 	    (pub->offset < 0 || (size_t)pub->offset >= u->code_size - 1))
 		die_at(unit_name(u), pub_off,
 		       "public function \"%s\" code offset %d is out of range",
-		       pub->name, pub->offset);
+		       name, pub->offset);
 
 	for (j = 0; j < i; j++)
-		if (strcmp(unit_pub_at(u, j)->name, pub->name) == 0)
+		if (strcmp(string_at(u, unit_pub_at(u, j)->name, pub_off),
+			   name) == 0)
 			die_at(unit_name(u), pub_off,
-			       "duplicate public symbol \"%s\"", pub->name);
+			       "duplicate public symbol \"%s\"", name);
 }
 
 static void unit_parse_publics(struct unit *u, uint64_t imports_end)
@@ -492,32 +395,28 @@ size_t unit_load(const char *path, const char *name)
 	return id;
 }
 
-struct unit *unit_of_code(const uint8_t *code)
-{
-	struct unit *u;
-	size_t i;
-
-	for (i = 0; i < units.count; i++) {
-		u = unit_at(i);
-		if (code >= u->code && code < u->code + u->code_size)
-			return u;
-	}
-	die("instruction pointer does not belong to a loaded unit");
-}
-
 size_t unit_find_file(const char *name, const char *relative_to)
 {
-	char path[PATH_MAX];
+	char path[PATH_MAX], stable_name[PATH_MAX];
 	const char *dir;
 	FILE *f;
-	size_t i;
+	size_t i, name_size;
+	int n;
+
+	name_size = strlen(name) + 1;
+	if (name_size > sizeof(stable_name))
+		die("bytecode unit name is too long");
+	memcpy(stable_name, name, name_size);
+	name = stable_name;
 
 	for (i = 0; i <= search_paths.count; i++) {
 		dir = i == 0 ? relative_to : unit_search_path_at(i - 1);
 		if (!dir)
 			continue;
 
-		snprintf(path, sizeof(path), "%s/%s.bc", dir, name);
+		n = snprintf(path, sizeof(path), "%s/%s.bc", dir, name);
+		if (n < 0 || (size_t)n >= sizeof(path))
+			die("bytecode path for unit \"%s\" is too long", name);
 		f = fopen(path, "rb");
 		if (f) {
 			fclose(f);

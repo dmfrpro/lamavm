@@ -19,7 +19,6 @@ enum {
 	BC_PUB_SIZE = BC_PUB_FLAG_OFFSET + sizeof(uint8_t),
 	BC_FORMAT_VERSION = 1,
 	EXTERNAL_REF_BIAS = 1,
-	BYTE_WIDTH = 8,
 };
 
 #endif

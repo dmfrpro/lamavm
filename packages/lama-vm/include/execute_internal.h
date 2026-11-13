@@ -18,11 +18,18 @@ enum {
 	FRAME_NARGS = 0,
 	FRAME_SAVED_BP = -1,
 	FRAME_SAVED_IP = -2,
-	FRAME_SAVED_SP = -3,
-	FRAME_SAVED_BASE = -4,
-	FRAME_LOCALS = -5,
-	CLOSURE_CAPTURE_OFFSET = 1,
+	FRAME_SAVED_UNIT = -3,
+	FRAME_SAVED_SP = -4,
+	FRAME_SAVED_BASE = -5,
+	FRAME_LOCALS = -6,
+	CLOSURE_ARG_OFFSET = 1,
+	CLOSURE_CAPTURE_OFFSET = 2,
 };
+
+static inline struct code_ref code_ref_none(void)
+{
+	return (struct code_ref){ .offset = -1 };
+}
 
 static inline aint *vm_sp(void)
 {
@@ -139,7 +146,7 @@ static inline void vm_init_locals(struct vm *vm, const struct insn *in,
 }
 
 static inline void frame_push(struct vm *vm, const struct insn *in,
-			      const uint8_t *return_ip, aint *caller_sp,
+			      struct code_ref return_ip, aint *caller_sp,
 			      int32_t nargs)
 {
 	aint *bp;
@@ -149,18 +156,20 @@ static inline void frame_push(struct vm *vm, const struct insn *in,
 	bp = sp - FRAME_LOCALS - 1;
 	bp[FRAME_NARGS] = BOX(nargs);
 	bp[FRAME_SAVED_BP] = (aint)vm->bp;
-	bp[FRAME_SAVED_IP] = (aint)return_ip;
+	bp[FRAME_SAVED_IP] = BOX(return_ip.offset);
+	bp[FRAME_SAVED_UNIT] = BOX(return_ip.unit_id);
 	bp[FRAME_SAVED_SP] = (aint)caller_sp;
 	bp[FRAME_SAVED_BASE] = (aint)vm->operand_base;
 	vm->bp = bp;
 	vm->operand_base = sp;
 }
 
-static const uint8_t *frame_restore(struct vm *vm)
+static struct code_ref frame_restore(struct vm *vm)
 {
-	const uint8_t *next;
+	struct code_ref next;
 
-	next = (const uint8_t *)vm->bp[FRAME_SAVED_IP];
+	next = (struct code_ref){ .unit_id = UNBOX(vm->bp[FRAME_SAVED_UNIT]),
+				  .offset = UNBOX(vm->bp[FRAME_SAVED_IP]) };
 	vm_set_sp((aint *)vm->bp[FRAME_SAVED_SP]);
 	vm->operand_base = (aint *)vm->bp[FRAME_SAVED_BASE];
 	vm->bp = (aint *)vm->bp[FRAME_SAVED_BP];
@@ -178,7 +187,7 @@ static inline aint *closure_addr(const struct vm *vm, int32_t index)
 	void *closure;
 
 	nargs = UNBOX(vm->bp[FRAME_NARGS]);
-	closure = (void *)vm->bp[nargs + CLOSURE_CAPTURE_OFFSET];
+	closure = (void *)vm->bp[nargs + CLOSURE_ARG_OFFSET];
 	return (aint *)closure + index + CLOSURE_CAPTURE_OFFSET;
 }
 

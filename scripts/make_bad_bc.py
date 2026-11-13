@@ -146,6 +146,23 @@ def _():
     )
 
 
+@case("negative_string_offset")
+def _():
+    return with_code(
+        bytes([0x52]) + i32(0, 0) + bytes([0x11]) + i32(-1) + bytes([0x16, 0xFF]),
+        strings=b"abc\0",
+    )
+
+
+@case("external_reference_underflow")
+def _():
+    return with_code(
+        bytes([0x52]) + i32(0, 0)
+        + bytes([0x56]) + i32(-(1 << 31), 0)
+        + bytes([0x16, 0xFF])
+    )
+
+
 @case("jump_outside_code")
 def _():
     return with_code(bytes([0x52]) + i32(0, 0) + bytes([0x15]) + i32(1000) + bytes([0xFF]))
