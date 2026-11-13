@@ -1,5 +1,6 @@
 #include "builtins.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static inline aint wrap_read(aint *args, int n)
@@ -185,41 +186,44 @@ static inline aint wrap_tl(aint *args, int n)
 }
 
 static const struct builtin builtins[] = {
-	{ "read", wrap_read },
-	{ "write", wrap_write },
-	{ "length", wrap_length },
-	{ "string", wrap_string },
-	{ "stringcat", wrap_stringcat },
-	{ "substring", wrap_substring },
-	{ "clone", wrap_clone },
-	{ ".elem", wrap_elem },
 	{ ".array", wrap_array },
-	{ "i__Infix_4343", wrap_concat },
-	{ "s__Infix_58", wrap_cons },
+	{ ".elem", wrap_elem },
+	{ "clone", wrap_clone },
 	{ "compare", wrap_compare },
 	{ "flatCompare", wrap_flatCompare },
+	{ "fst", wrap_fst },
 	{ "hash", wrap_hash },
-	{ "stringInt", wrap_stringInt },
-	{ "uppercase", wrap_uppercase },
+	{ "hd", wrap_hd },
+	{ "i__Infix_4343", wrap_concat },
+	{ "length", wrap_length },
 	{ "lowercase", wrap_lowercase },
 	{ "matchSubString", wrap_matchSubString },
+	{ "random", wrap_random },
+	{ "read", wrap_read },
 	{ "regexp", wrap_regexp },
 	{ "regexpMatch", wrap_regexpMatch },
-	{ "random", wrap_random },
-	{ "time", wrap_time },
-	{ "fst", wrap_fst },
+	{ "s__Infix_58", wrap_cons },
 	{ "snd", wrap_snd },
-	{ "hd", wrap_hd },
+	{ "string", wrap_string },
+	{ "stringInt", wrap_stringInt },
+	{ "stringcat", wrap_stringcat },
+	{ "substring", wrap_substring },
+	{ "time", wrap_time },
 	{ "tl", wrap_tl },
+	{ "uppercase", wrap_uppercase },
+	{ "write", wrap_write },
 };
+
+static int builtin_compare(const void *key, const void *value)
+{
+	const char *name = key;
+	const struct builtin *bi = value;
+
+	return strcmp(name, bi->name);
+}
 
 const struct builtin *builtin_find(const char *name)
 {
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(builtins); i++)
-		if (strcmp(builtins[i].name, name) == 0)
-			return &builtins[i];
-
-	return NULL;
+	return bsearch(name, builtins, ARRAY_SIZE(builtins), sizeof(*builtins),
+		       builtin_compare);
 }

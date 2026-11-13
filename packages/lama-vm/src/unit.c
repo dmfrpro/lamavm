@@ -291,23 +291,23 @@ static void unit_parse_imports(struct unit *u, uint64_t strings_end)
 	struct byte_reader reader;
 	int32_t *imports;
 	size_t handle, id = u->id;
-	size_t import_off;
+	size_t import_off, imports_size;
 	size_t i;
-	int32_t so;
 
 	if (u->imports_count > SIZE_MAX / sizeof(*imports))
 		die("too many imports in unit %s", unit_name(u));
-	handle = meta_alloc_bytes(u->imports_count * sizeof(*imports));
+	imports_size = u->imports_count * sizeof(*imports);
+	handle = meta_alloc_bytes(imports_size);
 	u = unit_get(id);
 	u->imports = handle;
 	imports = meta_get(handle);
 	reader_init(&reader, id, unit_image(u), u->image_size, 0);
 	reader_seek(&reader, (size_t)strings_end);
+	import_off = reader.pos;
+	memcpy(imports, reader_read(&reader, imports_size), imports_size);
 	for (i = 0; i < u->imports_count; i++) {
-		import_off = reader.pos;
-		so = reader_i32(&reader);
-		(void)string_at(u, so, import_off);
-		imports[i] = so;
+		(void)string_at(u, imports[i], import_off);
+		import_off += BC_IMPORT_SIZE;
 	}
 }
 
